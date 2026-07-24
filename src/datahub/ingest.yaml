@@ -17,7 +17,14 @@ source:
     include_view_lineage: false
     include_view_column_lineage: false
 
+# `datahub ingest` resolves ${VAR} against the real process environment, not
+# just .env -- source .env first (e.g. `set -a && source .env && set +a`) or
+# export DATAHUB_GMS_TOKEN yourself before running this. This GMS requires
+# auth (METADATA_SERVICE_AUTH_ENABLED=true, docs/decisions/0003), so ingestion
+# gets a 401 without a token, same as the setup scripts -- see
+# src/datahub/README.md#authentication.
 sink:
   type: datahub-rest
   config:
     server: "http://localhost:8080"
+    token: "${DATAHUB_GMS_TOKEN}"

@@ -22,6 +22,34 @@ healthcare/
 
 ---
 
+## Authentication
+
+This DataHub instance runs with `METADATA_SERVICE_AUTH_ENABLED=true`, so every
+script here — and `datahub ingest` itself — needs a Personal Access Token.
+Anonymous requests get a 401.
+
+**1. Enable auth on the GMS** (already on for this project's instance; only
+needed if you're standing up a fresh one). Set
+`METADATA_SERVICE_AUTH_ENABLED=true` in the `datahub-gms` container's
+environment and restart it.
+
+**2. Generate a token.** In the DataHub UI: **Settings → Access Tokens →
+Generate new token**. Copy it immediately — it's only shown once.
+
+**3. Add it to `.env`** (gitignored, never committed):
+```
+DATAHUB_GMS_URL=http://localhost:8080
+DATAHUB_GMS_TOKEN=<paste the generated token>
+```
+
+`add_lineage.py`, `add_metadata.py`, and `register_ml_model.py` load `.env`
+automatically (via `python-dotenv`) and exit with a clear error if
+`DATAHUB_GMS_TOKEN` is missing. `ingest.yaml`'s sink reads
+`${DATAHUB_GMS_TOKEN}` from the real process environment, not `.env`
+directly — source it into your shell first: `set -a && source .env && set +a`.
+
+---
+
 ## Quick Start
 
 ```bash

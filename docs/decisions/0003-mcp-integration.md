@@ -114,6 +114,21 @@ already proven across Sprint 1's `add_lineage.py`, `add_metadata.py`, and
   (`add_lineage.py`/`add_metadata.py`/`register_ml_model.py`) will now need a
   token to keep working, since anonymous GMS access no longer works. Not
   updated in this session — flagged here as a follow-up.
+
+  **Resolved 2026-07-23**: all three scripts now `load_dotenv()` and read
+  `DATAHUB_GMS_URL`/`DATAHUB_GMS_TOKEN` from `.env`, passing `token=` into
+  both `DataHubGraph`/`DatahubClientConfig` and `DatahubRestEmitter`; each
+  exits with a clear error (not a raw `401`/traceback) if the token is
+  missing. `ingest.yaml`'s `datahub-rest` sink now sets
+  `token: "${DATAHUB_GMS_TOKEN}"`, resolved by `datahub ingest`'s own env-var
+  expansion against the process environment. Verified live: with the token
+  absent, `add_lineage.py --dry-run` fails fast with the new error message
+  (exit 1, confirmed by temporarily moving `.env` aside); with it present, a
+  real (non-dry-run) `add_lineage.py` run against the local GMS succeeded —
+  9/9 lineage edges emitted, matching the 401 seen pre-fix on the same
+  anonymous request. See `src/datahub/README.md#authentication` for the
+  setup steps (enabling the flag, generating a token in the DataHub UI, the
+  required `.env` variables).
 - The product's agents will each need to manage their own MCP client
   lifecycle (spawn `mcp-server-datahub`, initialize session, call tools) —
   this is a real implementation dependency for Sentinel/Investigator, not

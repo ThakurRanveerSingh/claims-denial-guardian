@@ -23,7 +23,10 @@ denial_model_scores must already be registered):
 Supports: --dry-run
 """
 
+import os
 import sys
+
+from dotenv import load_dotenv
 
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
@@ -42,7 +45,11 @@ from datahub.metadata.schema_classes import (
 from datahub.metadata.urns import MlFeatureTableUrn, MlFeatureUrn, MlModelUrn
 from datahub.specific.dataset import DatasetPatchBuilder
 
-DATAHUB_SERVER = "http://localhost:8080"
+# See add_lineage.py for why this is required now (docs/decisions/0003).
+load_dotenv()
+
+DATAHUB_SERVER = os.environ.get("DATAHUB_GMS_URL", "http://localhost:8080")
+DATAHUB_TOKEN = os.environ.get("DATAHUB_GMS_TOKEN")
 SQLITE_PLATFORM = "sqlite"
 DEFAULT_INSTANCE = "healthcare"
 
@@ -235,9 +242,18 @@ def build_output_reference_mcps(denial_model_scores_urn, model_urn):
 def main():
     dry_run = "--dry-run" in sys.argv
 
+    if not DATAHUB_TOKEN:
+        print(
+            "  ✗ DATAHUB_GMS_TOKEN not set. This DataHub instance requires "
+            "auth (METADATA_SERVICE_AUTH_ENABLED=true), so anonymous requests "
+            "get a 401. Generate a Personal Access Token in the DataHub UI "
+            "and add it to .env -- see src/datahub/README.md#authentication."
+        )
+        sys.exit(1)
+
     print(f"Connecting to DataHub at {DATAHUB_SERVER}...")
     try:
-        graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_SERVER))
+        graph = DataHubGraph(DatahubClientConfig(server=DATAHUB_SERVER, token=DATAHUB_TOKEN))
     except Exception as e:
         print(f"  ✗ Cannot connect: {e}")
         sys.exit(1)
@@ -268,7 +284,7 @@ def main():
         print(f"    (produced_by_model -> {model_urn}; not a lineage edge, see comment in code)")
         return
 
-    emitter = DatahubRestEmitter(DATAHUB_SERVER)
+    emitter = DatahubRestEmitter(DATAHUB_SERVER, token=DATAHUB_TOKEN)
     for mcp in all_mcps:
         emitter.emit(mcp)
 
