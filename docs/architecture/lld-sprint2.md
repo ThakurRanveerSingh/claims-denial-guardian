@@ -871,4 +871,321 @@ examples/
 - **The exact `--allowedTools` string format for MCP-sourced tools in
   Design B (§2.6) is not independently re-verified against a real tool
   call this session** — flagged as an open, cheap-to-resolve verification
-  item for implementation, not assumed correct.
+  item for implementation, not assumed correct. (Formalized as an explicit
+  pre-implementation checklist item in §10.9.)
+
+## 10. Addendum (2026-07-24) — a second seeded scenario: genuinely upstream root cause
+
+Status: Accepted amendment. Appended after §0-§9 above were already
+committed (commit `a188ba7`) and reviewed — §0-§9 are left unchanged as an
+accurate record of the single-scenario design as it stood when written,
+matching the "append, don't rewrite history" convention decision 0003
+already used for its own resolved-follow-up note. This section is
+additive: the original scenario (`UnitedHealthcare`/`diabetes`, direct
+injection into `claims`) is kept exactly as designed in §0-§2, unchanged.
+Full reasoning for *why* a second scenario and *why this specific
+mechanism* is recorded in **decision 0006** — this section is the concrete
+design (mechanism, numbers, contract changes); 0006 is the "why."
+
+### 10.1 The gap this closes
+
+§0-§2 designed Investigator around one seeded incident, and that incident's
+evidence-backed conclusion is "not inherited — introduced at `claims`."
+That's a real, correct finding, but it only demonstrates one *direction* of
+Investigator's hypothesis-testing capability (§2.2 step 4: "does this
+reproduce at the immediate upstream source?"). US-2's lineage-walk story and
+US-3's (Remediator, later sprint) fix-generation story both need at least
+one incident where the answer to that same question is genuinely "yes, all
+the way to `raw_patients`" — where `mart_billing`/`staging_patients`/
+`raw_patients` actually need remediation, not just `claims`. Without a
+second scenario, Investigator's design can't be shown to *discriminate*
+between the two answers — it could always report "introduced downstream"
+and every demo run would look identical from a reader's perspective. Two
+contrasting incidents, side by side, is what actually exercises "stop at
+the first hop where it stops reproducing" in both directions.
+
+### 10.2 Mechanism: why all three of raw_patients / staging_patients / mart_billing, not just mart_billing
+
+Re-read `create_db.py` to ground this rather than assuming (per this
+document's own established standard). The relevant transformation chain,
+table by table:
+
+- `staging_patients` is built as `CREATE TABLE staging_patients AS SELECT *,
+  <_clean columns> FROM raw_patients` — a straight, unfiltered passthrough.
+  `staging_patients.billing_amount` is *identical* to
+  `raw_patients.billing_amount` for the same logical row (no cleaning
+  touches this column at all).
+- `mart_billing` is built as `CREATE TABLE mart_billing AS SELECT ...,
+  CAST(billing_amount AS REAL) AS billing_amount, ... FROM staging_patients`
+  — a type cast, sign and magnitude preserved, still no filtering.
+- `claims` (`schema_sprint1.sql`) is `INSERT INTO claims ... SELECT
+  b.billing_amount, ... FROM mart_billing b JOIN mart_demographics d ...` —
+  another straight copy.
+
+So the whole chain from `raw_patients.billing_amount` to
+`claims.billing_amount` is copy → cast → copy, with zero cleaning logic
+anywhere that would filter out a negative value. That matters for row
+alignment too: **verified this session** (read-only query against the real,
+committed `healthcare.db` — no mutation) that `raw_patients.rowid`,
+`staging_patients.rowid`, and `mart_billing.rowid` all refer to the *same
+logical row* for all 55,500 rows, at every hop:
+
+| Join | Rows checked | Matches |
+|---|---|---|
+| `raw_patients.rowid = staging_patients.rowid` (compare `billing_amount`) | 55,500 | 55,500 |
+| `staging_patients.rowid = mart_billing.rowid` (compare `billing_amount`) | 55,500 | 55,500 |
+| `raw_patients.rowid = mart_billing.rowid` (compare `billing_amount`, direct) | 55,500 | 55,500 |
+
+This holds because none of the three `CREATE TABLE ... AS SELECT`
+statements that build `staging_patients`, `mart_billing`, or
+`mart_demographics` use a `WHERE` or `ORDER BY` — a plain full-table scan
+preserves source row order, so the freshly assigned rowids in each new
+table land in the same sequence as the table they're built from. (This is
+the same fact `lld-sprint1.md` §0 already relied on for `mart_billing.rowid
+= mart_demographics.rowid`; this session extends the same verification one
+hop further back, to `raw_patients`.)
+
+**Given that, injecting into `mart_billing` alone would create a different,
+ambiguous third kind of finding** — a defect real at the `mart_billing` hop
+but absent from `staging_patients`/`raw_patients`. Investigator's hop-by-hop
+check (§2.2 step 4) would correctly report that as
+`"introduced_at:mart_billing"`, which is a real, valid finding *in
+general*, but it is not the "genuinely upstream, traceable all the way to
+`raw_patients`" contrast case the amendment asks for. **Decision: the
+injection writes the same negative value, at the same rowid, into all
+three of `raw_patients`, `staging_patients`, and `mart_billing`.** This is
+what makes the defect reproduce cleanly at every hop and gives an
+unambiguous `"inherited_from:raw_patients"` conclusion — matching US-2's
+literal "claims ← mart_billing ← staging ← raw" chain exactly, which is
+precisely the contrast case being asked for.
+
+**On the reason code, confirmed explicitly rather than left implicit**: no
+new `denial_reason_code` enum value is needed. `generate_denials.py`'s
+existing rule 1 (`deny_negative_billing()`) denies *any* claim with
+`billing_amount < 0` as `INVALID_BILLING_AMOUNT`, regardless of where that
+negative value originated — it doesn't inspect lineage, just the value.
+Once the upstream injection makes `mart_billing.billing_amount` negative
+for the target rows, `schema_sprint1.sql`'s unmodified `INSERT INTO claims
+... SELECT b.billing_amount ...` carries that negative value into `claims`
+automatically, and rule 1 denies it automatically, with the same reason
+code the existing scenario already uses. **No changes needed to
+`schema_sprint1.sql`, `generate_denials.py`'s rule 1, or the reason-code
+enum** — this is the concrete payoff of injecting upstream rather than
+hand-rolling a second, parallel denial path: the new scenario reuses 100%
+of the existing, already-verified machinery downstream of the injection
+point.
+
+### 10.3 Chosen segment, target rate, seed
+
+| Parameter | Existing scenario (unchanged) | New scenario |
+|---|---|---|
+| Segment | `UnitedHealthcare` / `diabetes` | `Cigna` / `obesity` |
+| Injection point | `claims.billing_amount` directly (post-population) | `raw_patients` + `staging_patients` + `mart_billing` (pre-population) |
+| Random seed | `RANDOM_SEED = 42` | `UPSTREAM_SEED = 43` |
+| Target rate | `SPIKE_TARGET_RATE = 0.20` (20%) | `UPSTREAM_TARGET_RATE = 0.15` (15%) |
+
+**Why a different provider *and* a different condition, not just a
+different provider**: the existing scenario is
+`UnitedHealthcare`/`diabetes`. Reusing `diabetes` under a different
+provider (or `UnitedHealthcare` under a different condition) risks reading,
+in a live demo, as "diabetes claims are systematically bad" or
+"UnitedHealthcare claims are systematically bad" rather than two genuinely
+distinct, unrelated incidents — weakening exactly the "Investigator
+discriminates between origins" story this amendment exists to tell.
+`Cigna`/`obesity` shares neither dimension with `UnitedHealthcare`/`diabetes`.
+
+**Why `UPSTREAM_SEED = 43`, not reusing `42`**: a distinct seed, not a
+copy, so the two scenarios' random row selections are independent of each
+other (reusing `42` wouldn't cause a bug, since the two `rng.sample()`
+calls draw from different populations — but a visibly different, explicitly
+offset value states "this is a separate, deliberately chosen parameter"
+rather than looking like an accidental copy-paste, the same reasoning
+`generate_denials.py` already applies by naming its tunables explicitly
+rather than burying them).
+
+**Why `15%`, not reusing `20%`**: distinct from the existing scenario's
+rate for the same "deliberate, not copy-pasted" reason, while still large
+enough (≈4x the composed-dataset baseline, §10.5) to produce a cleanly
+separated z-score — confirmed below, not assumed.
+
+### 10.4 Simulation methodology — how this was verified without touching `healthcare.db`
+
+Per the hard constraint on this task, the committed `src/datahub/healthcare.db`
+was never mutated. Verification method: copied the real file to an isolated
+scratchpad directory (outside the repo), copied the *actual, unmodified*
+`schema_sprint1.sql`/`generate_denials.py`/`score_claims.py` alongside it,
+wrote a draft injection script (`seed_upstream_scenario.py` — simulation-only,
+not committed; Slice 0 will write the real version), and ran the full
+sequence against the copy:
+
+```
+python seed_upstream_scenario.py             # NEW — injects into raw_patients/staging_patients/mart_billing
+sqlite3 healthcare.db < schema_sprint1.sql    # unmodified — rebuilds claims from the now-modified mart_billing
+python generate_denials.py                    # unmodified — both scenarios compose here
+python score_claims.py                        # unmodified
+```
+
+Using the real, unmodified downstream scripts (rather than hand-simulating
+what they'd do) means this isn't a hand-wave — it's the actual pipeline
+logic, run against a throwaway copy. **Confirmed after the session**:
+`git status --short` and `git diff --stat -- src/datahub/healthcare.db`
+both produced zero output against the real repo — the tracked file is
+byte-identical to before this session started.
+
+### 10.5 Results — both scenarios' z-scores, composed
+
+Computed with the exact two-proportion z-test from §1.2 (leave-one-out
+baseline), against all 30 segments, with **both** scenarios' denials
+present simultaneously (the realistic case — both incidents exist in the
+same pipeline run):
+
+| Segment | n | denied | rate | baseline (leave-one-out) | z |
+|---|---|---|---|---|---|
+| `UnitedHealthcare` / `diabetes` (existing) | 1,806 | 375 | 20.76% | 3.67% | **35.53** |
+| `Cigna` / `obesity` (new) | 1,864 | 298 | 15.99% | 3.81% | **25.69** |
+| *closest of the other 28 (untouched)* | 1,740 | 65 | 3.74% | 4.24% | −1.03 |
+| *most extreme of the other 28 (untouched)* | 1,870 | 43 | 2.30% | 4.29% | −4.21 |
+
+Both flagged segments clear `Z_THRESHOLD = 3.5` by a wide margin, and
+**every one of the other 28 segments now scores *negative*** (ranging
+−1.03 to −4.21) — none approach the positive threshold at all. This is an
+even cleaner separation on the "will this false-positive?" question than
+the single-scenario case, for a specific, checkable reason (§10.6).
+
+**Reproduction check, confirming the new scenario reads as genuinely
+upstream** (not just "flagged," but flagged *for the right, evidence-backed
+reason*): of the 280 `INVALID_BILLING_AMOUNT` denials in `Cigna`/`obesity`,
+**280/280 (100%)** reproduce at `mart_billing`, **280/280 (100%)** at
+`staging_patients`, and **280/280 (100%)** at `raw_patients` — an
+unambiguous `"inherited_from:raw_patients"` case, unlike the existing
+scenario's 90%/10% split. The existing scenario's own row-level facts are,
+as expected, completely unchanged by adding the second one: still exactly
+361 `INVALID_BILLING_AMOUNT` denials in `UnitedHealthcare`/`diabetes`,
+still exactly 36 of those reproducing in `mart_billing` — the new scenario
+is additive at the data level; it only affects *aggregate* z-score
+baselines (§10.6).
+
+### 10.6 Checked, not assumed: does the second scenario perturb the first scenario's z-score?
+
+**Yes — measurably, though not in a way that changes any conclusion.** The
+original single-scenario design (§1.2) reported `z = 38.00` for
+`UnitedHealthcare`/`diabetes`. With the second scenario composed into the
+same dataset, it's **`z = 35.53`** — a real shift (about 6.5% relative),
+not negligible in absolute terms, and worth reporting honestly rather than
+waving away. The mechanism is straightforward: the z-test's leave-one-out
+baseline for `UnitedHealthcare`/`diabetes` is computed from "every other
+segment," which now includes `Cigna`/`obesity`'s own inflated denial count
+— that raises the baseline rate being compared against (3.21% → 3.67%),
+which pulls `z` down somewhat. The same effect runs in the other direction
+for the 28 untouched segments: with *two* real spikes now contributing to
+everyone else's "rest" pool, their baselines are pulled up too, which is
+why all 28 of them now score negative rather than the single-scenario
+case's small positive noise ceiling (+0.64). **Neither shift threatens the
+design**: both flagged segments remain enormously separated from the
+untouched segments' scores (25.69 and 35.53 vs. a −1.03-to−4.21 band), so
+`Z_THRESHOLD = 3.5` still cleanly and unambiguously flags exactly the two
+seeded incidents and nothing else. This interaction — multiple simultaneous
+real incidents slightly shifting each other's and everyone else's
+leave-one-out baseline — is a real, understandable property of this
+statistical method with more than one true anomaly present, not a flaw in
+this specific pair of numbers; noted here so it isn't mistaken for one if a
+future sprint adds a third scenario.
+
+### 10.7 Sequencing (design-level; the actual script is Slice 0, not written here)
+
+The new injection **must run before `schema_sprint1.sql`** is (re-)run,
+because `schema_sprint1.sql` unconditionally `DROP`s and rebuilds `claims`
+from whatever is currently in `mart_billing` — if the injection happened
+after, its changes to `mart_billing` would sit unused until the next
+rebuild. Full order:
+
+1. **`seed_upstream_scenario.py`** (NEW, Slice 0) — injects into
+   `raw_patients`/`staging_patients`/`mart_billing` for `Cigna`/`obesity`,
+   per §10.2/§10.3.
+2. `sqlite3 healthcare.db < schema_sprint1.sql` (unchanged) — rebuilds
+   `claims`, now inheriting the injected values automatically.
+3. `python generate_denials.py` (unchanged) — runs the existing
+   `seed_segment_spike()` for `UnitedHealthcare`/`diabetes` exactly as
+   before, then rule 1 denies *both* segments' negative-billing claims with
+   the same `INVALID_BILLING_AMOUNT` reason code.
+4. `python score_claims.py` (unchanged).
+
+This ordering, and the fact that steps 2-4 need zero code changes, is the
+concrete reason §10.2 recommends the upstream-injection mechanism over any
+alternative that would touch `claims` or `generate_denials.py` directly for
+the new scenario too.
+
+### 10.8 Update to Investigator's contract (§2.3)
+
+§2.3's `InvestigatorFinding.root_cause_breakdown` example only showed a
+*minority*-upstream case (325/90% `introduced_at:claims`, 36/10%
+`inherited_from:mart_billing`). With this second scenario, the contract
+needs to read correctly for the opposite composition too — confirmed here
+rather than left as an untested assumption:
+
+- For `Cigna`/`obesity`: `primary_root_cause = "inherited_from:raw_patients"`,
+  `root_cause_breakdown = [{classification: "inherited_from:raw_patients",
+  claim_count: 280, pct: 100.0, note: "negative billing_amount present at
+  every upstream hop — mart_billing, staging_patients, and raw_patients"}]`,
+  `affected_branch = ["raw_patients", "staging_patients", "mart_billing",
+  "claims"]` (the full chain — unlike the existing scenario, real
+  remediation is needed at every stage here, not just `claims`),
+  `datasets_checked_and_clean = []` (nothing upstream is clean in this
+  case — everything checked is implicated).
+- No change to the field *shapes* themselves (`primary_root_cause`,
+  `root_cause_breakdown`, `affected_branch`, `datasets_checked_and_clean`
+  all already existed in §2.3) — only the *example values* needed
+  extending, since the original example happened to only exercise the
+  minority-upstream branch. §2.3's table is otherwise unchanged; this
+  addendum's job was to confirm the existing contract shape actually covers
+  a majority/100%-upstream case cleanly, and it does, with no schema
+  changes.
+- One genuinely new implication for Investigator's hypothesis-testing
+  workflow (§2.2 step 4), worth stating explicitly: the "stop at the first
+  hop where it stops reproducing" logic needs to keep walking *all the way
+  to `raw_patients`* when the anomaly never stops reproducing, not just
+  check one hop and assume "upstream" if it reproduces once. §2.2's step 4
+  already says "continue one hop further and repeat" for the
+  reproduces-case — this scenario is the first concrete evidence that
+  branch of the logic is actually necessary (the existing scenario alone
+  never exercised it, since its anomaly stopped reproducing at the very
+  first hop checked).
+
+### 10.9 Pre-implementation checklist — before Slice 3 (Investigator)
+
+**MUST verify before implementing Investigator's Design B path (§2.6):**
+the exact `--allowedTools` string syntax for MCP-sourced tools
+(`mcp__datahub__<tool>`, per Claude Code's documented convention) has
+**not** been independently confirmed against a real `claude -p` tool call —
+the smoke test that verified `--mcp-config`'s env-var expansion (§0) used a
+fake server with no real tools to permit, so it could not exercise this
+specific string format. Already flagged as an open item in §9; formalized
+here as an explicit, actionable gate:
+
+- [ ] **Before Slice 3 (Investigator implementation) begins**: run one real
+      `claude -p` call against the actual `datahub` MCP config
+      (`investigator_mcp_config.json`, once it exists) with `--allowedTools`
+      set to a single real DataHub tool name (e.g. `mcp__datahub__search`),
+      confirm the call actually reaches and uses that tool (not silently
+      falling through to "tool not permitted" or a permission prompt), and
+      only then proceed to wire up the full tool list in §2.6's invocation
+      shape. Cheap (one call, one tool), and resolves a genuinely
+      load-bearing unknown before it's built into the real implementation.
+
+### 10.10 What this addendum does NOT decide / NOT build
+
+- **The actual `seed_upstream_scenario.py` script is Slice 0, future
+  implementation work** — not written by this addendum.
+  `seed_upstream_scenario.py` as used in §10.3/§10.4 is a simulation-only
+  draft, run against a throwaway scratch copy of `healthcare.db`, never
+  committed, and deleted at the end of this session.
+- **No changes to `schema_sprint1.sql`, `generate_denials.py`,
+  `score_claims.py`, or the `denial_reason_code` enum** — confirmed
+  unnecessary (§10.2), not just assumed.
+- **No third scenario.** Two is what the amendment asked for; §10.6's noted
+  interaction effect (baselines shifting as more real incidents are added)
+  is worth knowing about *if* a third is ever added later, not a reason to
+  add one now.
+- **No change to Sentinel's `Z_THRESHOLD` default (still 3.5, §1.2)** — both
+  scenarios clear it with large margins under the composed-dataset numbers
+  in §10.5, so no retuning is needed.
