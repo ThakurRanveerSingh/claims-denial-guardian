@@ -16,6 +16,10 @@ import pytest
 DB_PATH = Path(__file__).parent.parent / "src" / "datahub" / "healthcare.db"
 
 SPIKE_SEGMENT = ("UnitedHealthcare", "diabetes")  # must match generate_denials.py
+# Second seeded anomaly (docs/decisions/0006-two-scenario-seeding.md): a
+# genuinely upstream-caused incident, must match seed_upstream_scenario.py.
+UPSTREAM_SEGMENT = ("Cigna", "obesity")
+SEEDED_SEGMENTS = {SPIKE_SEGMENT, UPSTREAM_SEGMENT}
 VALID_REASON_CODES = {"INVALID_BILLING_AMOUNT", "HIGH_RISK_SCORE", "RANDOM_AUDIT"}
 
 
@@ -98,10 +102,23 @@ def test_invalid_billing_denial_amount_matches_claim_billing_amount(conn):
 # --- anomaly present ---
 
 
-def test_seeded_anomaly_segment_is_a_clear_outlier(conn):
-    """LLD §3: one (provider, condition) segment's denial rate should be
-    pushed well above every other segment's — the anomaly Sentinel is meant
-    to detect and Investigator meant to trace."""
+def test_seeded_anomaly_segments_are_clear_outliers(conn):
+    """LLD §3 (single scenario) + lld-sprint2.md §10 / decision 0006 (second,
+    upstream-caused scenario added in Slice 0): the two seeded segments'
+    denial rates should both be pushed well above every other segment's —
+    the anomalies Sentinel is meant to detect and Investigator meant to
+    trace, tracing to two different root causes (introduced-at-claims vs.
+    inherited-from-raw_patients).
+
+    Originally asserted the single top segment was > 2x the *second*-place
+    rate — a "clear outlier from the pack" check. That assertion broke the
+    moment a second real anomaly of comparable size existed by design
+    (20.76% vs. 15.99% — nowhere near a 2x gap from each other, because
+    both are genuine seeded incidents, not one signal plus noise). The
+    correct check now compares both seeded segments against the *third*-place
+    rate — the highest of the 28 untouched segments, i.e. the real
+    background/noise ceiling — rather than against each other.
+    """
     rows = conn.execute(
         """
         SELECT c.insurance_provider, c.medical_condition,
@@ -119,12 +136,13 @@ def test_seeded_anomaly_segment_is_a_clear_outlier(conn):
         reverse=True,
     )
 
-    top_provider, top_condition, top_rate = rates[0]
-    second_rate = rates[1][2]
+    top_two_segments = {(provider, condition) for provider, condition, _ in rates[:2]}
+    top_two_rates = [rate for _, _, rate in rates[:2]]
+    background_ceiling = rates[2][2]  # highest rate among the 28 untouched segments
 
-    assert (top_provider, top_condition) == SPIKE_SEGMENT
-    assert top_rate > 0.15  # well above the ~2-4% baseline elsewhere
-    assert top_rate > second_rate * 2  # a clear outlier, not just noisy top-of-pack
+    assert top_two_segments == SEEDED_SEGMENTS
+    assert all(rate > 0.10 for rate in top_two_rates)  # well above the ~2-4% baseline elsewhere
+    assert min(top_two_rates) > background_ceiling * 2  # BOTH seeded segments clear outliers from the untouched pack
 
 
 # --- model produces scores ---
