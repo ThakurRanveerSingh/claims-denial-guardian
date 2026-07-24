@@ -58,6 +58,7 @@ import os
 import re
 import sqlite3
 import textwrap
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -198,6 +199,41 @@ class InvestigatorFinding:
         serialize this into examples/<incident-id>/incident.json (§4.2);
         this method exists now so that shape doesn't need inventing twice."""
         return asdict(self)
+
+
+@dataclass
+class InvestigatorRunResult:
+    """run_investigator()'s REAL return shape — added in Slice 4 to close a
+    gap Slice 4's own report named: `InvestigatorFinding` deliberately has
+    no cost/duration fields (§2.3's ten fields are the finding's substance;
+    operational metadata is `Incident.cost`'s job, §4.2, owned by
+    Orchestrator) — but nothing was plumbing that data OUT of
+    run_investigator() at all. Design B's real `InvestigationResult.cost_usd`
+    was being extracted into `turns_used` and silently dropped otherwise;
+    Design A's `_estimate_cost_usd()` accumulated a running total used only
+    internally for the budget check, never returned. Fixed here, once, for
+    both designs, since `InvestigatorFinding`'s own already-committed ten-
+    field shape (§2.3) is NOT reopened by this fix — this wraps it instead.
+
+    `finding`: unchanged, exactly §2.3's contract.
+    `cost_usd`: real dollars for Design B (`InvestigationResult.cost_usd`,
+      straight from `claude -p`'s own JSON) when available; the running
+      `_estimate_cost_usd()` total for Design A (a labeled ESTIMATE, per that
+      function's own docstring, since the raw `anthropic` SDK response has
+      no dollar figure at all); `None` only for Design B's exception paths
+      where no `InvestigationResult` was ever returned at all (see
+      `_investigate_design_b`'s comment on exactly why).
+    `duration_ms`: real wall-clock milliseconds either way — Design B prefers
+      `InvestigationResult.duration_ms` (reported directly by `claude -p`)
+      when available, falling back to this module's own `time.monotonic()`
+      measurement around the call otherwise; Design A always uses its own
+      `time.monotonic()` measurement around the whole loop, since the
+      `anthropic` SDK doesn't report an equivalent figure itself.
+    """
+
+    finding: InvestigatorFinding
+    cost_usd: Optional[float]
+    duration_ms: Optional[float]
 
 
 # The exact JSON schema InvestigatorFinding's model-facing contract must
@@ -503,8 +539,9 @@ def _investigate_design_b(
     mcp_config_path: Path,
     max_budget_usd: float,
     timeout_s: float,
-) -> InvestigatorFinding:
+) -> InvestigatorRunResult:
     task_prompt = _design_b_task_prompt(finding)
+    call_started = time.monotonic()
 
     try:
         result = backend.investigate(
@@ -518,58 +555,94 @@ def _investigate_design_b(
         # §6 failure mode 3's specific, distinguishable reason string — the
         # fix (wait, or switch LLM_BACKEND) is different from real ambiguity,
         # and must not be conflated with it in the record.
-        return _inconclusive_finding(
-            reason=f"llm_backend_unavailable: subscription_limit ({e})",
-            evidence=[
-                EvidenceEntry(
-                    step="delegate investigation",
-                    tool="claude -p (Design B)",
-                    query_or_call=f"investigate(mcp_config_path={mcp_config_path})",
-                    result_summary=f"budget exhausted before completion: {e}",
-                )
-            ],
-            backend_used=backend.name,
-            turns_used=None,
+        #
+        # cost_usd=None here, deliberately, not a guess: BudgetExhaustedError
+        # (Slice 2, llm_backend.py — not touched by this fix) carries the
+        # dollar figure only inside its message string ("cost so far: ..."),
+        # not as a structured attribute, and widening that exception's shape
+        # is out of scope for this narrow fix. The figure is still visible
+        # to a human reading root_cause_summary below (it's interpolated
+        # into `e`) — just not available as a structured
+        # Incident.cost.investigator_cost_usd number for this one failure
+        # path. Named explicitly rather than silently returning 0.0 (which
+        # would be actively wrong — real budget WAS spent) or fabricating a
+        # number.
+        return InvestigatorRunResult(
+            finding=_inconclusive_finding(
+                reason=f"llm_backend_unavailable: subscription_limit ({e})",
+                evidence=[
+                    EvidenceEntry(
+                        step="delegate investigation",
+                        tool="claude -p (Design B)",
+                        query_or_call=f"investigate(mcp_config_path={mcp_config_path})",
+                        result_summary=f"budget exhausted before completion: {e}",
+                    )
+                ],
+                backend_used=backend.name,
+                turns_used=None,
+            ),
+            cost_usd=None,
+            duration_ms=(time.monotonic() - call_started) * 1000,
         )
     except LLMBackendError as e:
         # §6 failure mode 1 (MCP unreachable) and any other llm_backend.py
         # failure (CLI missing, timeout, malformed response) — all real,
         # named failures that must resolve to inconclusive, not a crash.
-        return _inconclusive_finding(
-            reason=f"llm_backend_unavailable: {e}",
-            evidence=[
-                EvidenceEntry(
-                    step="delegate investigation",
-                    tool="claude -p (Design B)",
-                    query_or_call=f"investigate(mcp_config_path={mcp_config_path})",
-                    result_summary=f"backend call failed: {e}",
-                )
-            ],
-            backend_used=backend.name,
-            turns_used=None,
+        return InvestigatorRunResult(
+            finding=_inconclusive_finding(
+                reason=f"llm_backend_unavailable: {e}",
+                evidence=[
+                    EvidenceEntry(
+                        step="delegate investigation",
+                        tool="claude -p (Design B)",
+                        query_or_call=f"investigate(mcp_config_path={mcp_config_path})",
+                        result_summary=f"backend call failed: {e}",
+                    )
+                ],
+                backend_used=backend.name,
+                turns_used=None,
+            ),
+            cost_usd=None,
+            duration_ms=(time.monotonic() - call_started) * 1000,
         )
+
+    # Prefer claude -p's own reported duration (real, from the CLI's own
+    # JSON) over this module's wall-clock measurement, which also includes
+    # Python-side overhead (subprocess spawn/teardown, JSON parsing) the CLI's
+    # own figure doesn't. Fall back to the wall-clock measurement only if the
+    # CLI didn't report one for some reason.
+    measured_duration_ms = (time.monotonic() - call_started) * 1000
+    duration_ms = result.duration_ms if result.duration_ms is not None else measured_duration_ms
 
     try:
         data = _extract_fenced_json(result.result_text)
-        return finding_from_model_output(data, backend_used=backend.name, turns_used=result.turns)
+        finding_out = finding_from_model_output(data, backend_used=backend.name, turns_used=result.turns)
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
         # Decision 0004's named "known accepted risk": Design B has no
         # structured-output guarantee. A malformed/missing JSON block is a
         # real (if rare) failure mode — handled as inconclusive with the raw
-        # text preserved as evidence, not a crash.
-        return _inconclusive_finding(
-            reason=f"could not parse InvestigatorFinding from the model's final answer: {e}",
-            evidence=[
-                EvidenceEntry(
-                    step="parse final answer",
-                    tool="claude -p (Design B)",
-                    query_or_call="extract fenced ```json``` block from result_text",
-                    result_summary=(result.result_text or "")[:2000],
-                )
-            ],
-            backend_used=backend.name,
-            turns_used=result.turns,
+        # text preserved as evidence, not a crash. cost_usd/duration_ms ARE
+        # available here (unlike the exception paths above) — the call
+        # itself completed, only the answer's shape was unparseable, so
+        # there's no reason to lose real cost data over a parsing problem.
+        return InvestigatorRunResult(
+            finding=_inconclusive_finding(
+                reason=f"could not parse InvestigatorFinding from the model's final answer: {e}",
+                evidence=[
+                    EvidenceEntry(
+                        step="parse final answer",
+                        tool="claude -p (Design B)",
+                        query_or_call="extract fenced ```json``` block from result_text",
+                        result_summary=(result.result_text or "")[:2000],
+                    )
+                ],
+                backend_used=backend.name,
+                turns_used=result.turns,
+            ),
+            cost_usd=result.cost_usd,
+            duration_ms=duration_ms,
         )
+    return InvestigatorRunResult(finding=finding_out, cost_usd=result.cost_usd, duration_ms=duration_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -793,10 +866,20 @@ async def _investigate_design_a_async(
     *,
     max_turns: int,
     max_budget_usd: float,
-) -> InvestigatorFinding:
+) -> InvestigatorRunResult:
     db_path = _resolve_db_path(conn)
     evidence: list[EvidenceEntry] = []
     cumulative_cost_usd = 0.0
+    loop_started = time.monotonic()
+
+    def _elapsed_ms() -> float:
+        # The `anthropic` SDK reports no per-call latency figure the way
+        # claude -p's own JSON does (§0) — this module's own wall-clock
+        # measurement, around the WHOLE loop, is the only real duration
+        # figure Design A has to report. Called at every return point below
+        # so every outcome (success, every inconclusive path, every
+        # exception) gets a real number, not just the happy path.
+        return (time.monotonic() - loop_started) * 1000
 
     server_params = StdioServerParameters(
         command="uvx",
@@ -832,19 +915,27 @@ async def _investigate_design_a_async(
                                 result_summary=f"exceeded INVESTIGATOR_MAX_BUDGET_USD=${max_budget_usd:.2f}",
                             )
                         )
-                        return _inconclusive_finding(
-                            reason=(
-                                f"llm_backend_unavailable: budget_exceeded "
-                                f"(estimated ${cumulative_cost_usd:.4f} > ${max_budget_usd:.2f})"
+                        return InvestigatorRunResult(
+                            finding=_inconclusive_finding(
+                                reason=(
+                                    f"llm_backend_unavailable: budget_exceeded "
+                                    f"(estimated ${cumulative_cost_usd:.4f} > ${max_budget_usd:.2f})"
+                                ),
+                                evidence=evidence,
+                                backend_used=backend.name,
+                                turns_used=turn,
                             ),
-                            evidence=evidence,
-                            backend_used=backend.name,
-                            turns_used=turn,
+                            cost_usd=cumulative_cost_usd,
+                            duration_ms=_elapsed_ms(),
                         )
 
                     submit_call = next((tc for tc in completion.tool_calls if tc.name == "submit_finding"), None)
                     if submit_call is not None:
-                        return finding_from_model_output(submit_call.input, backend_used=backend.name, turns_used=turn)
+                        return InvestigatorRunResult(
+                            finding=finding_from_model_output(submit_call.input, backend_used=backend.name, turns_used=turn),
+                            cost_usd=cumulative_cost_usd,
+                            duration_ms=_elapsed_ms(),
+                        )
 
                     if not completion.tool_calls:
                         # The model stopped without calling submit_finding —
@@ -860,11 +951,15 @@ async def _investigate_design_a_async(
                                 result_summary=(completion.text or "")[:2000],
                             )
                         )
-                        return _inconclusive_finding(
-                            reason="model ended the conversation without calling submit_finding",
-                            evidence=evidence,
-                            backend_used=backend.name,
-                            turns_used=turn,
+                        return InvestigatorRunResult(
+                            finding=_inconclusive_finding(
+                                reason="model ended the conversation without calling submit_finding",
+                                evidence=evidence,
+                                backend_used=backend.name,
+                                turns_used=turn,
+                            ),
+                            cost_usd=cumulative_cost_usd,
+                            duration_ms=_elapsed_ms(),
                         )
 
                     tool_result_blocks = []
@@ -877,15 +972,23 @@ async def _investigate_design_a_async(
 
                 # MAX_TURNS exhausted without submit_finding — LLD §5's
                 # primary guardrail for this design, tripped.
-                return _inconclusive_finding(
-                    reason=f"llm_backend_unavailable: max_turns_exceeded (INVESTIGATOR_MAX_TURNS={max_turns})",
-                    evidence=evidence,
-                    backend_used=backend.name,
-                    turns_used=max_turns,
+                return InvestigatorRunResult(
+                    finding=_inconclusive_finding(
+                        reason=f"llm_backend_unavailable: max_turns_exceeded (INVESTIGATOR_MAX_TURNS={max_turns})",
+                        evidence=evidence,
+                        backend_used=backend.name,
+                        turns_used=max_turns,
+                    ),
+                    cost_usd=cumulative_cost_usd,
+                    duration_ms=_elapsed_ms(),
                 )
     except LLMBackendError as e:
-        return _inconclusive_finding(
-            reason=f"llm_backend_unavailable: {e}", evidence=evidence, backend_used=backend.name, turns_used=None
+        return InvestigatorRunResult(
+            finding=_inconclusive_finding(
+                reason=f"llm_backend_unavailable: {e}", evidence=evidence, backend_used=backend.name, turns_used=None
+            ),
+            cost_usd=cumulative_cost_usd,
+            duration_ms=_elapsed_ms(),
         )
     except Exception as e:  # noqa: BLE001 — deliberately broad: §6 failure mode 1
         # (MCP server unreachable/fails to start) and any other unexpected
@@ -905,17 +1008,21 @@ async def _investigate_design_a_async(
                 result_summary=f"unreachable or failed: {e}",
             )
         )
-        return _inconclusive_finding(
-            reason=f"mcp_server_unreachable_or_loop_error: {e}",
-            evidence=evidence,
-            backend_used=backend.name,
-            turns_used=None,
+        return InvestigatorRunResult(
+            finding=_inconclusive_finding(
+                reason=f"mcp_server_unreachable_or_loop_error: {e}",
+                evidence=evidence,
+                backend_used=backend.name,
+                turns_used=None,
+            ),
+            cost_usd=cumulative_cost_usd,
+            duration_ms=_elapsed_ms(),
         )
 
 
 def _investigate_design_a(
     backend: LLMBackend, finding: SentinelFinding, conn: sqlite3.Connection, *, max_turns: int, max_budget_usd: float
-) -> InvestigatorFinding:
+) -> InvestigatorRunResult:
     return asyncio.run(
         _investigate_design_a_async(backend, finding, conn, max_turns=max_turns, max_budget_usd=max_budget_usd)
     )
@@ -935,10 +1042,12 @@ def run_investigator(
     max_budget_usd: Optional[float] = None,
     max_turns: Optional[int] = None,
     timeout_s: Optional[float] = None,
-) -> InvestigatorFinding:
+) -> InvestigatorRunResult:
     """Investigate a Sentinel-flagged segment, returning an
-    InvestigatorFinding regardless of which design actually ran (decision
-    0005's dispatch, made here, once):
+    InvestigatorRunResult (finding + real cost/duration — see that
+    dataclass's own docstring for why this isn't a bare InvestigatorFinding)
+    regardless of which design actually ran (decision 0005's dispatch, made
+    here, once):
 
         if backend.supports_delegated_investigation:
             Design B — backend.investigate(), Slice 2's generic mechanism,
@@ -962,6 +1071,13 @@ def run_investigator(
     itself was opened read-only. Design B doesn't use `conn` directly at
     all (it runs `sqlite3 -readonly <DB_PATH>` as a separate subprocess) —
     accepted here anyway so both designs share one call signature.
+
+    Callers who only want the finding itself (e.g. reading
+    `.primary_root_cause`) use `run_investigator(...).finding` — a one-
+    attribute-deeper access is the real, honest cost of exposing cost/
+    duration at all, preferred here over silently attaching non-§2.3 fields
+    onto `InvestigatorFinding` itself (which decision 0005/§2.3 already
+    settled as a fixed ten-field contract — not reopened by this fix).
     """
     if max_budget_usd is None:
         max_budget_usd = _default_max_budget_usd()

@@ -39,6 +39,7 @@ from agents.investigator import (
     DESIGN_B_ALLOWED_TOOLS,
     EvidenceEntry,
     InvestigatorFinding,
+    InvestigatorRunResult,
     RootCauseBreakdownEntry,
     _breakdown_from_dicts,
     _completion_to_content_blocks,
@@ -418,13 +419,27 @@ class TestDesignALoop:
 
         result = run_investigator(backend, _make_sentinel_finding(), conn, max_turns=12, max_budget_usd=5.0)
 
-        assert result.primary_root_cause == "introduced_at:claims"
-        assert result.turns_used == 3
-        assert result.backend_used == "anthropic"
+        assert isinstance(result, InvestigatorRunResult)
+        assert result.finding.primary_root_cause == "introduced_at:claims"
+        assert result.finding.turns_used == 3
+        assert result.finding.backend_used == "anthropic"
         # The DataHub relay actually dispatched to the (fake) MCP session.
         assert session.calls == [("get_lineage", {"urn": "x"})]
         # complete() was called with the tool schemas attached every turn.
         assert all(call["tools"] is not None for call in backend.complete_calls)
+        # The cost-plumbing fix (Slice 4): three turns of 500/100 tokens each
+        # at the module's own ESTIMATED_*_COST_PER_MTOK rates — a real,
+        # non-zero running total actually reached the caller now, not
+        # silently dropped after being used only for the internal budget
+        # check.
+        expected_cost = 3 * (500 / 1_000_000 * 3.00 + 100 / 1_000_000 * 15.00)
+        assert result.cost_usd == pytest.approx(expected_cost)
+        assert result.cost_usd > 0
+        # Real wall-clock duration (this module's own time.monotonic()
+        # measurement around the loop, since the anthropic SDK reports no
+        # equivalent figure) — not a placeholder, not None.
+        assert result.duration_ms is not None
+        assert result.duration_ms >= 0
 
     def test_max_turns_exceeded_resolves_to_inconclusive(self, monkeypatch, conn):
         _patch_mcp(monkeypatch)
@@ -440,10 +455,10 @@ class TestDesignALoop:
 
         result = run_investigator(backend, _make_sentinel_finding(), conn, max_turns=3, max_budget_usd=5.0)
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "max_turns_exceeded" in result.root_cause_summary
-        assert result.turns_used == 3
-        assert result.confidence == "low"
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "max_turns_exceeded" in result.finding.root_cause_summary
+        assert result.finding.turns_used == 3
+        assert result.finding.confidence == "low"
 
     def test_budget_exceeded_resolves_to_inconclusive(self, monkeypatch, conn):
         _patch_mcp(monkeypatch)
@@ -459,9 +474,14 @@ class TestDesignALoop:
 
         result = run_investigator(backend, _make_sentinel_finding(), conn, max_turns=12, max_budget_usd=0.01)
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "budget_exceeded" in result.root_cause_summary
-        assert result.turns_used == 1
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "budget_exceeded" in result.finding.root_cause_summary
+        assert result.finding.turns_used == 1
+        # The whole reason this path fired: cost_usd genuinely exceeds
+        # max_budget_usd. Confirms the inconclusive path still reports the
+        # real running total, not None/0 just because the outcome wasn't a
+        # clean success.
+        assert result.cost_usd > 0.01
 
     def test_model_stops_without_submit_finding_resolves_to_inconclusive(self, monkeypatch, conn):
         _patch_mcp(monkeypatch)
@@ -475,9 +495,9 @@ class TestDesignALoop:
 
         result = run_investigator(backend, _make_sentinel_finding(), conn, max_turns=12, max_budget_usd=5.0)
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "without calling submit_finding" in result.root_cause_summary
-        assert result.turns_used == 1
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "without calling submit_finding" in result.finding.root_cause_summary
+        assert result.finding.turns_used == 1
 
     def test_mcp_server_unreachable_resolves_to_inconclusive_not_a_crash(self, monkeypatch, conn):
         def _raise_stdio_client(params):
@@ -488,9 +508,13 @@ class TestDesignALoop:
 
         result = run_investigator(backend, _make_sentinel_finding(), conn, max_turns=12, max_budget_usd=5.0)
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "mcp_server_unreachable" in result.root_cause_summary
-        assert result.turns_used is None
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "mcp_server_unreachable" in result.finding.root_cause_summary
+        assert result.finding.turns_used is None
+        # No turn ever ran (failed before the loop started) — cost_usd
+        # should correctly read exactly 0.0, not None or a stale value.
+        assert result.cost_usd == 0.0
+        assert result.duration_ms is not None
 
     def test_llm_backend_error_mid_loop_resolves_to_inconclusive(self, monkeypatch, conn):
         _patch_mcp(monkeypatch)
@@ -504,8 +528,8 @@ class TestDesignALoop:
 
         result = run_investigator(_RaisingBackend(), _make_sentinel_finding(), conn, max_turns=12, max_budget_usd=5.0)
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "llm_backend_unavailable" in result.root_cause_summary
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "llm_backend_unavailable" in result.finding.root_cause_summary
 
 
 class TestDesignADispatchHelpers:
@@ -615,14 +639,20 @@ class TestDesignBInvestigate:
 
         result = run_investigator(backend, _make_sentinel_finding(), sqlite3.connect(":memory:"))
 
-        assert result.primary_root_cause == "inherited_from:raw_patients"
-        assert result.turns_used == 6
-        assert result.backend_used == "claude_code"
+        assert result.finding.primary_root_cause == "inherited_from:raw_patients"
+        assert result.finding.turns_used == 6
+        assert result.finding.backend_used == "claude_code"
         # The real DataHub-specific values this module owns were actually used.
         call = backend.investigate_calls[0]
         assert call["allowed_tools"] == DESIGN_B_ALLOWED_TOOLS
         assert call["mcp_config_path"] == investigator.MCP_CONFIG_PATH
         assert "Zorbex Insurance" in call["task_prompt"]
+        # The cost-plumbing fix (Slice 4): Design B's real InvestigationResult
+        # cost_usd/duration_ms (straight from claude -p's own JSON) now
+        # actually reach the caller, instead of being extracted into
+        # turns_used and dropped otherwise.
+        assert result.cost_usd == 0.42
+        assert result.duration_ms == 9000
 
     def test_malformed_json_resolves_to_inconclusive_not_a_crash(self):
         backend = _ScriptedBackend(
@@ -635,10 +665,17 @@ class TestDesignBInvestigate:
 
         result = run_investigator(backend, _make_sentinel_finding(), sqlite3.connect(":memory:"))
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "could not parse" in result.root_cause_summary
-        assert "ran out of things to say" in result.evidence[0].result_summary
-        assert result.turns_used == 3
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "could not parse" in result.finding.root_cause_summary
+        assert "ran out of things to say" in result.finding.evidence[0].result_summary
+        assert result.finding.turns_used == 3
+        # The call itself completed (only the answer's shape was
+        # unparseable) — cost/duration are real numbers here, not lost just
+        # because the parse failed. This InvestigationResult didn't set
+        # duration_ms explicitly (defaults to None), so this exercises the
+        # documented fallback to this module's own wall-clock measurement.
+        assert result.cost_usd is None  # InvestigationResult didn't set cost_usd either, in this canned response
+        assert result.duration_ms is not None and result.duration_ms >= 0
 
     def test_budget_exhausted_resolves_to_inconclusive_with_subscription_limit_reason(self):
         backend = _ScriptedBackend(
@@ -649,9 +686,17 @@ class TestDesignBInvestigate:
 
         result = run_investigator(backend, _make_sentinel_finding(), sqlite3.connect(":memory:"))
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "subscription_limit" in result.root_cause_summary
-        assert result.turns_used is None
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "subscription_limit" in result.finding.root_cause_summary
+        assert result.finding.turns_used is None
+        # Documented, deliberate gap (see _investigate_design_b's own
+        # comment): BudgetExhaustedError carries the dollar figure only in
+        # its message string, not as a structured attribute, so cost_usd
+        # is honestly None here rather than a guess — but duration_ms is
+        # still real (this module's own wall-clock measurement around the
+        # failed call).
+        assert result.cost_usd is None
+        assert result.duration_ms is not None and result.duration_ms >= 0
 
     def test_other_llm_backend_error_resolves_to_inconclusive(self):
         backend = _ScriptedBackend(
@@ -662,8 +707,8 @@ class TestDesignBInvestigate:
 
         result = run_investigator(backend, _make_sentinel_finding(), sqlite3.connect(":memory:"))
 
-        assert result.primary_root_cause == "inconclusive"
-        assert "llm_backend_unavailable" in result.root_cause_summary
+        assert result.finding.primary_root_cause == "inconclusive"
+        assert "llm_backend_unavailable" in result.finding.root_cause_summary
 
     def test_custom_overrides_are_passed_through(self):
         finding_dict = _valid_finding_dict()
@@ -785,14 +830,20 @@ def test_live_investigation_against_real_data():
     conn.close()
 
     print("\n=== LIVE Investigator result (UnitedHealthcare/diabetes) ===")
-    print(json.dumps(result.to_dict(), indent=2, default=str))
+    print(json.dumps(result.finding.to_dict(), indent=2, default=str))
+    # Slice 4's cost-plumbing fix: real cost/duration now surface here too
+    # (this test itself is what originally exposed the gap in Slice 3's own
+    # report — result.cost_usd/duration_ms didn't exist at all when this
+    # test was first written and run).
+    print(f"cost_usd: {result.cost_usd}")
+    print(f"duration_ms: {result.duration_ms}")
 
-    assert result.primary_root_cause != "inconclusive", (
-        f"expected a confident root cause, got inconclusive: {result.root_cause_summary}"
+    assert result.finding.primary_root_cause != "inconclusive", (
+        f"expected a confident root cause, got inconclusive: {result.finding.root_cause_summary}"
     )
     # The evidence-backed ground truth for this specific seeded scenario
     # (lld-sprint2.md §0/§10): the anomaly is introduced AT claims, not
     # inherited from any upstream table.
-    assert result.primary_root_cause == "introduced_at:claims", (
-        f"expected introduced_at:claims, got {result.primary_root_cause}: {result.root_cause_summary}"
+    assert result.finding.primary_root_cause == "introduced_at:claims", (
+        f"expected introduced_at:claims, got {result.finding.primary_root_cause}: {result.finding.root_cause_summary}"
     )

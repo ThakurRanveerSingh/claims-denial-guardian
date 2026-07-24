@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claims-denial-guardian"
+version = "0.1.0"
+description = "Sentinel/Investigator agent pipeline for claims denial anomaly detection and root-cause tracing."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic==0.118.0",
+    "acryl-datahub[sqlalchemy]==1.6.0.15",
+    "mcp==1.28.1",
+    "python-dotenv==1.2.2",
+]
+
+# lld-sprint2.md §4.3: a real `guardian` command on PATH via
+# `pip install -e .`, not `python -m src.agents.cli run` typed out every
+# time — the standard, idiomatic way Python projects expose a command.
+# Rejected alternative (§4.3): a `bin/guardian` shell shim — works, but
+# isn't on PATH by default either and teaches a project-specific convention
+# instead of the standard packaging mechanism.
+[project.scripts]
+guardian = "agents.cli:main"
+
+[tool.setuptools.packages.find]
+# "src layout": the real package lives at src/agents/ (has __init__.py),
+# installed as top-level `agents`. `where = ["src"]` alone would also
+# auto-discover src/datahub/ and src/codegen/ if either ever grows an
+# __init__.py — src/datahub/ specifically would then collide with the REAL
+# `datahub` PyPI package (acryl-datahub) that add_lineage.py/add_metadata.py/
+# register_ml_model.py already import (`from datahub.ingestion...`).
+# `include` restricts discovery to the one package this project actually
+# means to install, closing that collision risk explicitly rather than
+# relying on "no one's added an __init__.py there yet."
+where = ["src"]
+include = ["agents*"]
