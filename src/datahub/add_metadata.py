@@ -55,10 +55,15 @@ TAG_DEFINITIONS = {
 
 TAG_ASSIGNMENTS = {
     "pii": ["raw_patients", "staging_patients", "mart_demographics"],
-    "critical": ["mart_billing"],
+    # denials added: same direct-financial-impact reasoning as mart_billing.
+    "critical": ["mart_billing", "denials"],
     "internal": ["mart_demographics"],
-    "quality_monitored": ["raw_patients"],
-    "pipeline_stage": ["raw_patients", "staging_patients", "mart_billing", "mart_demographics"],
+    # claims/denials added: Sentinel actively checks these (LLD §4 step 3).
+    "quality_monitored": ["raw_patients", "claims", "denials"],
+    "pipeline_stage": [
+        "raw_patients", "staging_patients", "mart_billing", "mart_demographics",
+        "claims", "denials", "denial_model_scores",
+    ],
 }
 
 # ─── Glossary ───
@@ -75,12 +80,29 @@ GLOSSARY_DEFINITIONS = {
         "name": "Length of Stay",
         "definition": "Calculated field: discharge_date minus admission_date, in days. Depends on both dates being valid. If admission and discharge dates are swapped, this value becomes negative — a clear quality signal.",
     },
+    "denial_reason_code": {
+        "name": "Denial Reason Code",
+        "definition": "Enumerated reason a claim was denied (Sprint 1, LLD §1.2). Three codes: "
+        "INVALID_BILLING_AMOUNT (billing_amount < 0 on the source claim — the seeded anomaly this "
+        "demo detects), HIGH_RISK_SCORE (toy model's risk_score above threshold — background realism), "
+        "RANDOM_AUDIT (small baseline rate of unrelated denials — background realism, keeps the dataset "
+        "from looking artificially clean).",
+    },
+    "denial_risk_score": {
+        "name": "Denial Risk Score",
+        "definition": "0-1 score from the toy denial-risk heuristic (model_version 'toy-denial-risk-v1', "
+        "LLD §2): 0.6 x the claim's (insurance_provider, medical_condition) segment denial rate, plus "
+        "0.4 x a normalized billing-amount z-score within that segment. A deterministic, explicitly "
+        "untuned heuristic — not a fitted model.",
+    },
 }
 
 GLOSSARY_ASSIGNMENTS = {
     "billing_amount": ["raw_patients", "mart_billing"],
     "admission_date": ["raw_patients", "staging_patients"],
     "length_of_stay": ["mart_billing"],
+    "denial_reason_code": ["denials"],
+    "denial_risk_score": ["denial_model_scores"],
 }
 
 # ─── Ownership ───
@@ -88,6 +110,10 @@ OWNERSHIP_ASSIGNMENTS = {
     "clinical_team": ["raw_patients", "staging_patients"],
     "finance_team": ["mart_billing"],
     "research_team": ["mart_demographics"],
+    # New group for Sprint 1's claims layer — distinct from the existing
+    # clinical/finance/research teams, matching US-1's "claims operations
+    # lead" persona directly (LLD §4 step 3).
+    "claims_ops_team": ["claims", "denials", "denial_model_scores"],
 }
 
 
@@ -235,8 +261,8 @@ def main():
     print(f"\n{'='*50}")
     print(f"✅ Metadata complete")
     print(f"   Tags: pii, critical, internal, quality_monitored, pipeline_stage")
-    print(f"   Glossary: Billing Amount, Admission Date, Length of Stay")
-    print(f"   Owners: clinical_team, finance_team, research_team")
+    print(f"   Glossary: Billing Amount, Admission Date, Length of Stay, Denial Reason Code, Denial Risk Score")
+    print(f"   Owners: clinical_team, finance_team, research_team, claims_ops_team")
     print(f"{'='*50}")
 
 

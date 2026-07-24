@@ -40,6 +40,11 @@ TABLE_LINEAGE = {
     "staging_patients": ["raw_patients"],
     "mart_billing": ["staging_patients"],
     "mart_demographics": ["staging_patients"],
+    # Sprint 1 additions (LLD §1.1: claims has two real upstreams — billing
+    # columns plus medical_condition joined in from demographics via rowid).
+    "claims": ["mart_billing", "mart_demographics"],
+    "denials": ["claims"],
+    "denial_model_scores": ["claims"],
 }
 
 
@@ -131,6 +136,7 @@ def main():
     else:
         print(f"✅ Lineage added: {count} relationships")
         print(f"   Pipeline: raw_patients → staging_patients → mart_billing + mart_demographics")
+        print(f"             mart_billing + mart_demographics → claims → denials, denial_model_scores")
     print(f"{'='*50}")
 
 
