@@ -11,3 +11,5 @@
 - Never commit secrets. API keys live in .env (gitignored).
 - All DataHub metadata reads MUST go through the DataHub MCP server or SDK —
   never hardcode schemas.
+- Commit at every Part/slice boundary; push at least daily — work must
+  never sit uncommitted across sessions.
