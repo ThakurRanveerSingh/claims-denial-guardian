@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run Sentinel only; print what would happen. Spends zero LLM budget.",
     )
     run_parser.add_argument(
+        "--no-writeback",
+        action="store_true",
+        help="Skip Scribe (tag/documentation/assertion writeback to DataHub) after Investigator.",
+    )
+    run_parser.add_argument(
         "--llm-backend",
         default=None,
         metavar="claude_code|anthropic|ollama",
@@ -63,6 +68,7 @@ def _run_command(args: argparse.Namespace) -> int:
             llm_backend_name=args.llm_backend,
             segment=args.segment,
             dry_run=args.dry_run,
+            writeback=not args.no_writeback,
             max_budget_usd=args.max_budget_usd,
         )
     except ValueError as e:

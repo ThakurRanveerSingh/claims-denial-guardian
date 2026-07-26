@@ -42,6 +42,7 @@ from dotenv import load_dotenv
 
 from agents.investigator import InvestigatorFinding, run_investigator
 from agents.llm_backend import LLMBackend, LLMBackendError, get_backend
+from agents.scribe import ScribeResult, run_scribe
 from agents.sentinel import Segment, SentinelFinding, run_sentinel
 
 # Same load_dotenv() convention as every other module in this repo.
@@ -85,10 +86,17 @@ class Incident:
     incident_id: str
     created_at: str  # ISO 8601
     status: str  # "no_anomaly" | "investigated" | "inconclusive"
-    pipeline_stages_run: list[str]  # ["sentinel"] or ["sentinel", "investigator"]
+    pipeline_stages_run: list[str]  # ["sentinel"], [..., "investigator"], or [..., "scribe"]
     sentinel: SentinelFinding
     investigator: Optional[InvestigatorFinding]
     cost: IncidentCost
+    # Sprint 3 WP1: the extension lld-sprint2.md §4.1 explicitly anticipated
+    # ("Remediator/Scribe... append their own sections to an existing
+    # record later, rather than requiring this sprint's contract to be
+    # reopened"). None whenever Scribe didn't run (no_anomaly, --dry-run,
+    # or --no-writeback) — same "None means genuinely didn't happen, not a
+    # placeholder" convention `investigator` already uses.
+    scribe: Optional[ScribeResult] = None
 
     def to_dict(self) -> dict:
         """JSON-serializable form for examples/<incident-id>/incident.json.
@@ -113,6 +121,10 @@ class Incident:
             "sentinel": _sentinel_finding_to_dict(self.sentinel),
             "investigator": self.investigator.to_dict() if self.investigator is not None else None,
             "cost": asdict(self.cost),
+            # ScribeResult/ScribeEntityResult are plain dataclasses with no
+            # NamedTuple fields -- none of the Segment-style asdict() gotcha
+            # this method's own docstring warns about applies here.
+            "scribe": asdict(self.scribe) if self.scribe is not None else None,
         }
 
 
@@ -165,6 +177,7 @@ def _build_incident(
     investigator_turns_or_calls: Optional[int],
     wall_clock_seconds: float,
     created_at: datetime,
+    scribe_result: Optional[ScribeResult] = None,
 ) -> Incident:
     if investigator_finding is None:
         status = "no_anomaly"
@@ -176,6 +189,9 @@ def _build_incident(
         status = "investigated"
         pipeline_stages_run = ["sentinel", "investigator"]
 
+    if scribe_result is not None:
+        pipeline_stages_run = pipeline_stages_run + ["scribe"]
+
     return Incident(
         incident_id=_make_incident_id(sentinel_finding.segment, created_at),
         created_at=created_at.isoformat(),
@@ -183,6 +199,7 @@ def _build_incident(
         pipeline_stages_run=pipeline_stages_run,
         sentinel=sentinel_finding,
         investigator=investigator_finding,
+        scribe=scribe_result,
         cost=IncidentCost(
             # Sentinel's optional LLM narration (§1.4's narrate_fn seam,
             # src/agents/sentinel.py) is still completely unwired as of this
@@ -204,6 +221,7 @@ def run_guardian(
     llm_backend_name: Optional[str] = None,
     segment: Optional[tuple[str, str]] = None,
     dry_run: bool = False,
+    writeback: bool = True,
     z_threshold: Optional[float] = None,
     max_budget_usd: Optional[float] = None,
 ) -> list[Incident]:
@@ -238,6 +256,17 @@ def run_guardian(
     the FIRST time an investigation is actually about to run — not
     up front — so dry runs and clean runs (nothing flagged, nothing forced)
     never pay that construction cost or its potential failure mode at all.
+
+    `writeback`: whether Scribe (Sprint 3 WP1, docs/decisions/0007) runs
+    after Investigator for each segment that was actually investigated
+    (§4.3's `--no-writeback` override). Scribe never runs at all for
+    `--dry-run` or a not-flagged/not-forced segment — there is no
+    `InvestigatorFinding` to write back for those, matching the same
+    "don't do the work if there's nothing to do" reasoning `backend`'s lazy
+    construction already follows. Scribe's own internal logic additionally
+    no-ops gracefully for an inconclusive finding (empty `affected_branch`,
+    nothing to write) — not special-cased here, since Scribe already
+    handles it.
     """
     own_conn = conn is None
     if conn is None:
@@ -284,16 +313,24 @@ def run_guardian(
                 backend = get_backend(llm_backend_name)
 
             run_result = run_investigator(backend, sf, conn, max_budget_usd=max_budget_usd)
-            incidents.append(
-                _build_incident(
-                    sf,
-                    investigator_finding=run_result.finding,
-                    investigator_cost_usd=run_result.cost_usd,
-                    investigator_turns_or_calls=run_result.finding.turns_used,
-                    wall_clock_seconds=time.monotonic() - started,
-                    created_at=created_at,
-                )
+            incident = _build_incident(
+                sf,
+                investigator_finding=run_result.finding,
+                investigator_cost_usd=run_result.cost_usd,
+                investigator_turns_or_calls=run_result.finding.turns_used,
+                wall_clock_seconds=time.monotonic() - started,
+                created_at=created_at,
             )
+            if writeback:
+                # Mutate in place rather than rebuild: _build_incident()
+                # already computed everything else correctly above (status,
+                # incident_id, cost) -- only pipeline_stages_run and scribe
+                # need updating once Scribe's real result is known, and
+                # Incident is a plain (non-frozen) dataclass, so this is the
+                # direct way to do that without recomputing the rest.
+                incident.scribe = run_scribe(incident)
+                incident.pipeline_stages_run = incident.pipeline_stages_run + ["scribe"]
+            incidents.append(incident)
 
         return incidents
     finally:
@@ -338,6 +375,23 @@ def print_incident_summary(incident: Incident, written_path: Optional[Path] = No
         print(f"  Lineage path walked: {', '.join(inv.lineage_path_walked) or '(none recorded)'}")
         print(f"  Confidence: {inv.confidence}")
         print(f"  Backend: {inv.backend_used}")
+        print()
+
+    if incident.scribe is not None:
+        print("Scribe:")
+        if not incident.scribe.entities:
+            print("  Nothing to write back (no affected entities).")
+        for er in incident.scribe.entities:
+            if er.entity_urn is None:
+                print(f"  {er.entity_name}: skipped — {er.skipped_reason}")
+                continue
+            tag = "tag (already present)" if er.tag_already_present else "tag" if er.tag_applied else "tag: not applied"
+            doc = "doc note (already present)" if er.doc_note_already_present else "doc note" if er.doc_note_added else "doc note: not added"
+            if er.assertion_run_event_emitted:
+                assertion = "assertion (already defined)" if er.assertion_already_defined else "assertion"
+            else:
+                assertion = f"assertion: skipped ({er.skipped_reason})"
+            print(f"  {er.entity_name}: {tag}, {doc}, {assertion}")
         print()
 
     cost = incident.cost

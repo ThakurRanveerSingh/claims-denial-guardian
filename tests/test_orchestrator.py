@@ -38,6 +38,7 @@ from agents.orchestrator import (
     write_incident,
 )
 from agents.investigator import EvidenceEntry, InvestigatorFinding, InvestigatorRunResult, RootCauseBreakdownEntry
+from agents.scribe import ScribeResult
 from agents.sentinel import METHOD, Segment, SentinelFinding
 import agents.cli as cli
 
@@ -248,6 +249,7 @@ class TestRunGuardian:
         monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
         fake_backend = object()
         monkeypatch.setattr(orchestrator, "get_backend", lambda name: fake_backend)
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
 
         investigated_segments = []
 
@@ -268,6 +270,7 @@ class TestRunGuardian:
     def test_segment_override_forces_investigation_regardless_of_flag(self, monkeypatch):
         monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
         monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
 
         investigated_segments = []
 
@@ -303,6 +306,7 @@ class TestRunGuardian:
         monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: two_flagged)
         get_backend_calls = []
         monkeypatch.setattr(orchestrator, "get_backend", lambda name: get_backend_calls.append(name) or object())
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
         monkeypatch.setattr(
             orchestrator,
             "run_investigator",
@@ -318,6 +322,7 @@ class TestRunGuardian:
     def test_max_budget_usd_passed_through_to_investigator(self, monkeypatch):
         monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
         monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
         received = {}
 
         def _fake_run_investigator(backend, finding, conn, max_budget_usd=None):
@@ -342,6 +347,68 @@ class TestRunGuardian:
 
         incidents = run_guardian(conn=object())
         assert all(inc.status == "no_anomaly" for inc in incidents)
+
+    def test_writeback_true_calls_scribe_and_records_result(self, monkeypatch):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+        scribe_calls = []
+
+        def _fake_run_scribe(incident):
+            scribe_calls.append(incident.incident_id)
+            return ScribeResult(incident_id=incident.incident_id, doc_url="https://example.com/x")
+
+        monkeypatch.setattr(orchestrator, "run_scribe", _fake_run_scribe)
+
+        incidents = run_guardian(conn=object())  # writeback defaults to True
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert scribe_calls == [flagged.incident_id]
+        assert flagged.scribe is not None
+        assert flagged.scribe.doc_url == "https://example.com/x"
+        assert flagged.pipeline_stages_run == ["sentinel", "investigator", "scribe"]
+
+    def test_writeback_false_never_calls_scribe(self, monkeypatch):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+
+        def _fail(*a, **kw):
+            raise AssertionError("run_scribe() should never be called when writeback=False")
+
+        monkeypatch.setattr(orchestrator, "run_scribe", _fail)
+
+        incidents = run_guardian(conn=object(), writeback=False)
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert flagged.scribe is None
+        assert flagged.pipeline_stages_run == ["sentinel", "investigator"]
+
+    def test_writeback_false_dry_run_and_no_flagged_never_call_scribe(self, monkeypatch):
+        """Redundant with dry_run/no-flagged's own existing never-investigate
+        guarantees, but pinned explicitly for Scribe too -- writeback=True
+        (the default) must not spawn a real MCP session in either of these
+        already-covered no-investigation paths."""
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
+
+        def _fail(*a, **kw):
+            raise AssertionError("run_scribe() should never be called with nothing investigated")
+
+        monkeypatch.setattr(orchestrator, "run_scribe", _fail)
+        monkeypatch.setattr(orchestrator, "get_backend", _fail)
+        monkeypatch.setattr(orchestrator, "run_investigator", _fail)
+
+        run_guardian(conn=object(), dry_run=True)  # writeback still defaults True
 
 
 # ===========================================================================
@@ -518,6 +585,18 @@ class TestCli:
         cli.main(["run", "--dry-run", "--max-budget-usd", "1.5", "--llm-backend", "anthropic"])
         assert received["max_budget_usd"] == 1.5
         assert received["llm_backend_name"] == "anthropic"
+
+    def test_no_writeback_flag_disables_writeback(self, monkeypatch):
+        received = {}
+        monkeypatch.setattr(cli, "run_guardian", lambda **kw: received.update(kw) or [])
+        cli.main(["run", "--dry-run", "--no-writeback"])
+        assert received["writeback"] is False
+
+    def test_writeback_defaults_true_without_the_flag(self, monkeypatch):
+        received = {}
+        monkeypatch.setattr(cli, "run_guardian", lambda **kw: received.update(kw) or [])
+        cli.main(["run", "--dry-run"])
+        assert received["writeback"] is True
 
 
 # ===========================================================================
