@@ -258,4 +258,17 @@ python add_lineage.py --dry-run            # Preview only
 # ── Metadata ──
 python add_metadata.py                     # Add tags, glossary, ownership
 python add_metadata.py --dry-run           # Preview only
+
+# ── ML entity registration ──
+python register_ml_model.py                # Register denial_risk_model as a real MLModel entity
+python register_ml_model.py --dry-run      # Preview only
 ```
+
+**Re-run `register_ml_model.py` after ANY future `datahub ingest -c ingest.yaml`.**
+Its `produced_by_model` custom property on `denial_model_scores` lives in the
+same DataHub aspect ingestion re-emits wholesale on every run — re-ingesting
+silently wipes that one patched property (confirmed happened once, Sprint 3
+WP1 Part A). `add_lineage.py`/`add_metadata.py` do NOT need re-running after
+a re-ingest — their tags/glossary/ownership/lineage live in separate aspect
+types ingestion never touches. See `register_ml_model.py`'s own docstring
+for the full mechanism.

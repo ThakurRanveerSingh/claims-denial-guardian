@@ -20,6 +20,23 @@ denial_model_scores must already be registered):
     python add_metadata.py
     python register_ml_model.py
 
+*** RE-RUN THIS SCRIPT AFTER ANY FUTURE `datahub ingest` re-run ***
+(Diagnosed Sprint 3, WP1 Part A -- see docs/walkthroughs/sprint-3.md.)
+The `produced_by_model` custom property this script patches onto
+denial_model_scores lives in the SAME `datasetProperties` aspect that
+`datahub ingest`'s sqlalchemy source re-emits WHOLESALE (a full-object
+overwrite, not a merge) every time it runs. Re-ingesting after this script
+has already patched that property silently wipes it back to empty -- this
+already happened once (Sprint 2's Slice 0 re-ran `datahub ingest` after the
+two-scenario reseed and nobody re-ran this script afterward, since
+add_lineage.py/add_metadata.py's tags/glossary/ownership/lineage DON'T need
+a re-run -- those live in separate aspect types `datahub ingest` never
+touches. This script's one customProperties patch is the exception, not the
+rule, precisely because it shares an aspect type with ingestion's own
+output). If you ever re-run `datahub ingest -c ingest.yaml`, re-run this
+script immediately after, even if nothing about the model/features
+themselves changed.
+
 Supports: --dry-run
 """
 
