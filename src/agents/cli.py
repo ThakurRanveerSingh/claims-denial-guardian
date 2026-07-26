@@ -47,6 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip Scribe (tag/documentation/assertion writeback to DataHub) after Investigator.",
     )
     run_parser.add_argument(
+        "--remediate",
+        action="store_true",
+        help="Run Remediator after Scribe: generate a fix, validate it against a scratch copy of "
+        "healthcare.db, and open a real pull request on denial-guardian-data-platform. Off by "
+        "default -- opening a PR is a side effect with its own explicit-consent story.",
+    )
+    run_parser.add_argument(
         "--llm-backend",
         default=None,
         metavar="claude_code|anthropic|ollama",
@@ -69,6 +76,7 @@ def _run_command(args: argparse.Namespace) -> int:
             segment=args.segment,
             dry_run=args.dry_run,
             writeback=not args.no_writeback,
+            remediate=args.remediate,
             max_budget_usd=args.max_budget_usd,
         )
     except ValueError as e:

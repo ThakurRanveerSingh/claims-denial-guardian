@@ -38,6 +38,7 @@ from agents.orchestrator import (
     write_incident,
 )
 from agents.investigator import EvidenceEntry, InvestigatorFinding, InvestigatorRunResult, RootCauseBreakdownEntry
+from agents.remediator import RemediatorResult
 from agents.scribe import ScribeResult
 from agents.sentinel import METHOD, Segment, SentinelFinding
 import agents.cli as cli
@@ -410,6 +411,98 @@ class TestRunGuardian:
 
         run_guardian(conn=object(), dry_run=True)  # writeback still defaults True
 
+    def test_remediate_false_by_default_never_calls_remediator(self, monkeypatch):
+        """--remediate is opt-in (decision 0008): a plain run_guardian() call
+        must never open a PR."""
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
+
+        def _fail(*a, **kw):
+            raise AssertionError("run_remediator() should never be called when remediate=False")
+
+        monkeypatch.setattr(orchestrator, "run_remediator", _fail)
+
+        incidents = run_guardian(conn=object())  # remediate defaults to False
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert flagged.remediator is None
+        assert "remediator" not in flagged.pipeline_stages_run
+
+    def test_remediate_true_calls_remediator_and_records_result(self, monkeypatch):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
+
+        remediate_calls = []
+
+        def _fake_run_remediator(incident, backend):
+            remediate_calls.append(incident.incident_id)
+            return RemediatorResult(incident_id=incident.incident_id, status="success", pr_url="https://github.com/x/y/pull/1")
+
+        monkeypatch.setattr(orchestrator, "run_remediator", _fake_run_remediator)
+
+        incidents = run_guardian(conn=object(), remediate=True)
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert remediate_calls == [flagged.incident_id]
+        assert flagged.remediator is not None
+        assert flagged.remediator.pr_url == "https://github.com/x/y/pull/1"
+        assert flagged.pipeline_stages_run == ["sentinel", "investigator", "scribe", "remediator"]
+
+    def test_remediate_true_with_writeback_false_still_runs_independently(self, monkeypatch):
+        """remediate and writeback are independent side effects on
+        independent systems (DataHub vs. GitHub) -- --remediate must still
+        run Remediator even when --no-writeback skips Scribe."""
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+
+        def _fail_scribe(*a, **kw):
+            raise AssertionError("run_scribe() should never be called when writeback=False")
+
+        monkeypatch.setattr(orchestrator, "run_scribe", _fail_scribe)
+        monkeypatch.setattr(
+            orchestrator, "run_remediator",
+            lambda incident, backend: RemediatorResult(incident_id=incident.incident_id, status="success", pr_url="https://github.com/x/y/pull/2"),
+        )
+
+        incidents = run_guardian(conn=object(), writeback=False, remediate=True)
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert flagged.scribe is None
+        assert flagged.remediator is not None
+        assert flagged.pipeline_stages_run == ["sentinel", "investigator", "remediator"]
+
+    def test_remediate_true_dry_run_and_no_flagged_never_call_remediator(self, monkeypatch):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
+
+        def _fail(*a, **kw):
+            raise AssertionError("run_remediator() should never be called with nothing investigated")
+
+        monkeypatch.setattr(orchestrator, "run_remediator", _fail)
+        monkeypatch.setattr(orchestrator, "get_backend", _fail)
+        monkeypatch.setattr(orchestrator, "run_investigator", _fail)
+
+        run_guardian(conn=object(), dry_run=True, remediate=True)
+
 
 # ===========================================================================
 # 3. Print output.
@@ -597,6 +690,18 @@ class TestCli:
         monkeypatch.setattr(cli, "run_guardian", lambda **kw: received.update(kw) or [])
         cli.main(["run", "--dry-run"])
         assert received["writeback"] is True
+
+    def test_remediate_flag_enables_remediate(self, monkeypatch):
+        received = {}
+        monkeypatch.setattr(cli, "run_guardian", lambda **kw: received.update(kw) or [])
+        cli.main(["run", "--dry-run", "--remediate"])
+        assert received["remediate"] is True
+
+    def test_remediate_defaults_false_without_the_flag(self, monkeypatch):
+        received = {}
+        monkeypatch.setattr(cli, "run_guardian", lambda **kw: received.update(kw) or [])
+        cli.main(["run", "--dry-run"])
+        assert received["remediate"] is False
 
 
 # ===========================================================================

@@ -42,6 +42,7 @@ from dotenv import load_dotenv
 
 from agents.investigator import InvestigatorFinding, run_investigator
 from agents.llm_backend import LLMBackend, LLMBackendError, get_backend
+from agents.remediator import RemediatorResult, run_remediator
 from agents.scribe import ScribeResult, run_scribe
 from agents.sentinel import Segment, SentinelFinding, run_sentinel
 
@@ -97,6 +98,12 @@ class Incident:
     # or --no-writeback) — same "None means genuinely didn't happen, not a
     # placeholder" convention `investigator` already uses.
     scribe: Optional[ScribeResult] = None
+    # Sprint 3 WP2: same "None means genuinely didn't happen" convention as
+    # `scribe` above. None unless --remediate was passed AND an
+    # investigation actually ran for this segment — opening a PR is a real
+    # side effect, off by default (decision 0008), same principle as
+    # --no-writeback for Scribe's DataHub writes.
+    remediator: Optional[RemediatorResult] = None
 
     def to_dict(self) -> dict:
         """JSON-serializable form for examples/<incident-id>/incident.json.
@@ -125,6 +132,10 @@ class Incident:
             # NamedTuple fields -- none of the Segment-style asdict() gotcha
             # this method's own docstring warns about applies here.
             "scribe": asdict(self.scribe) if self.scribe is not None else None,
+            # Same reasoning: RemediatorResult/RemediationAttempt/FixTarget/
+            # ValidationResult are all plain dataclasses, no NamedTuple
+            # fields anywhere in the chain.
+            "remediator": asdict(self.remediator) if self.remediator is not None else None,
         }
 
 
@@ -222,6 +233,7 @@ def run_guardian(
     segment: Optional[tuple[str, str]] = None,
     dry_run: bool = False,
     writeback: bool = True,
+    remediate: bool = False,
     z_threshold: Optional[float] = None,
     max_budget_usd: Optional[float] = None,
 ) -> list[Incident]:
@@ -267,6 +279,20 @@ def run_guardian(
     no-ops gracefully for an inconclusive finding (empty `affected_branch`,
     nothing to write) — not special-cased here, since Scribe already
     handles it.
+
+    `remediate`: whether Remediator (Sprint 3 WP2, docs/decisions/0008) runs
+    after Scribe for each segment that was actually investigated (`--remediate`
+    override). OFF BY DEFAULT, deliberately — opening a real pull request is
+    a side effect with its own consent story, same principle as
+    `--no-writeback`'s default-on/opt-out shape, just inverted (default-off/
+    opt-in) because a PR is a more visible, harder-to-quietly-ignore side
+    effect than a DataHub tag. Independent of `writeback`: `--remediate`
+    with `--no-writeback` still opens a PR without touching DataHub: the two
+    are separate side effects on separate systems, not sequenced
+    dependencies of each other. Remediator's own internal logic no-ops
+    gracefully (`status="no_fix_available"`) for an inconclusive finding or
+    a root cause with no known fix shape — not special-cased here, same
+    "the agent already handles it" reasoning as `writeback` above.
     """
     own_conn = conn is None
     if conn is None:
@@ -330,6 +356,12 @@ def run_guardian(
                 # direct way to do that without recomputing the rest.
                 incident.scribe = run_scribe(incident)
                 incident.pipeline_stages_run = incident.pipeline_stages_run + ["scribe"]
+            if remediate:
+                # Same in-place mutation as `writeback` above. Independent
+                # of it (see run_guardian()'s docstring) — runs regardless
+                # of whether Scribe just ran or was skipped.
+                incident.remediator = run_remediator(incident, backend)
+                incident.pipeline_stages_run = incident.pipeline_stages_run + ["remediator"]
             incidents.append(incident)
 
         return incidents
@@ -392,6 +424,22 @@ def print_incident_summary(incident: Incident, written_path: Optional[Path] = No
             else:
                 assertion = f"assertion: skipped ({er.skipped_reason})"
             print(f"  {er.entity_name}: {tag}, {doc}, {assertion}")
+        print()
+
+    if incident.remediator is not None:
+        print("Remediator:")
+        rem = incident.remediator
+        if rem.status == "no_fix_available":
+            print(f"  No fix available: {rem.reason}")
+        elif rem.status == "failed_validation":
+            print(f"  Fix generation FAILED after {len(rem.attempts)} attempt(s): {rem.reason}")
+        else:
+            already = " (already existed)" if rem.pr_already_existed else ""
+            print(f"  PR opened{already}: {rem.pr_url}")
+            if rem.fix_target is not None:
+                print(f"  Fix target: {rem.fix_target.transform_file}")
+            if rem.owner:
+                print(f"  Suggested owner: {rem.owner}")
         print()
 
     cost = incident.cost

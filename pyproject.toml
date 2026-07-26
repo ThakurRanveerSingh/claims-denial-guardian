@@ -24,14 +24,17 @@ dependencies = [
 guardian = "agents.cli:main"
 
 [tool.setuptools.packages.find]
-# "src layout": the real package lives at src/agents/ (has __init__.py),
-# installed as top-level `agents`. `where = ["src"]` alone would also
-# auto-discover src/datahub/ and src/codegen/ if either ever grows an
-# __init__.py — src/datahub/ specifically would then collide with the REAL
-# `datahub` PyPI package (acryl-datahub) that add_lineage.py/add_metadata.py/
-# register_ml_model.py already import (`from datahub.ingestion...`).
-# `include` restricts discovery to the one package this project actually
-# means to install, closing that collision risk explicitly rather than
-# relying on "no one's added an __init__.py there yet."
+# "src layout": the real packages live at src/agents/ and (as of Sprint 3
+# WP2) src/codegen/, both with __init__.py, installed as top-level
+# `agents`/`codegen`. `where = ["src"]` alone would also auto-discover
+# src/datahub/ if it ever grew an __init__.py — it specifically would
+# collide with the REAL `datahub` PyPI package (acryl-datahub) that
+# add_lineage.py/add_metadata.py/register_ml_model.py already import
+# (`from datahub.ingestion...`). `include` restricts discovery to the
+# packages this project actually means to install, closing that collision
+# risk explicitly rather than relying on "no one's added an __init__.py
+# there yet." `codegen` has no such collision risk (not a real PyPI name)
+# but is listed explicitly for the same reason `agents` is: intentional,
+# not just whatever `where` happens to auto-discover.
 where = ["src"]
-include = ["agents*"]
+include = ["agents*", "codegen*"]
