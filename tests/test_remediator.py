@@ -112,6 +112,17 @@ def _sql_response(sql: str) -> CompletionResult:
     return CompletionResult(text=f"Here is the fix:\n```sql\n{sql}\n```\n")
 
 
+def _patch_git_reads(monkeypatch, data_platform_repo: Path) -> None:
+    """run_remediator() now reads `current_sql` via git (_read_committed_file,
+    against origin/main) rather than straight off disk -- correct against a
+    real clone, but these unit tests use a plain (non-git) tmp_path
+    directory for data_platform_repo. Patches both the `_run_git` fetch
+    call and `_read_committed_file` to read straight from the working tree
+    instead, preserving each test's intent without needing a real git repo."""
+    monkeypatch.setattr(remediator, "_run_git", lambda args, cwd: subprocess.CompletedProcess(args=["git"] + args, returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(remediator, "_read_committed_file", lambda repo, relative_file, ref="origin/main": (repo / relative_file).read_text())
+
+
 # ===========================================================================
 # 1. Pure functions -- no mocking, no I/O at all.
 # ===========================================================================
@@ -262,10 +273,16 @@ class TestBuildPrBody:
         defaults.update(overrides)
         return ValidationResult(**defaults)
 
+    def _fresh_build(self, **overrides):
+        from codegen.fresh_build_validation import FreshBuildResult
+        defaults = dict(success=True)
+        defaults.update(overrides)
+        return FreshBuildResult(**defaults)
+
     def test_includes_incident_and_segment_and_root_cause(self):
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), self._fresh_build(), "claims_ops_team")
         assert "INC-1" in body
         assert "UnitedHealthcare" in body
         assert "diabetes" in body
@@ -275,7 +292,7 @@ class TestBuildPrBody:
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
         validation = self._validation(clean_count=325, quarantine_count=36, original_count=361)
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", validation, "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", validation, self._fresh_build(), "claims_ops_team")
         assert "36" in body
         assert "PASS" in body
 
@@ -284,20 +301,37 @@ class TestBuildPrBody:
         sentinel = _make_sentinel_finding()
         # 325 + 36 != 361 -- a dropped row.
         validation = self._validation(clean_count=325, quarantine_count=35, original_count=361, success=False)
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", validation, "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", validation, self._fresh_build(), "claims_ops_team")
         assert "FAIL" in body
+
+    def test_fresh_build_pass_reported(self):
+        finding = _make_investigator_finding()
+        sentinel = _make_sentinel_finding()
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), self._fresh_build(success=True), "claims_ops_team")
+        assert "Fresh-database build" in body
+        assert "PASS" in body
+
+    def test_fresh_build_none_reported_as_not_run(self):
+        """A defensive default, not a real code path (run_remediator never
+        reaches _build_pr_body without a successful fresh_build) -- still
+        worth being honest rather than silently claiming PASS if this ever
+        changes."""
+        finding = _make_investigator_finding()
+        sentinel = _make_sentinel_finding()
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), None, "claims_ops_team")
+        assert "not run" in body
 
     def test_operational_note_includes_owner(self):
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), self._fresh_build(), "claims_ops_team")
         assert "Operational note" in body
         assert "claims_ops_team" in body
 
     def test_operational_note_falls_back_when_owner_unknown(self):
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), None)
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), self._fresh_build(), None)
         assert "unknown" in body.lower()
 
     def test_quotes_root_cause_summary_verbatim(self):
@@ -305,7 +339,7 @@ class TestBuildPrBody:
         marked section quoting root_cause_summary exactly, not paraphrased."""
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), self._fresh_build(), "claims_ops_team")
         assert finding.root_cause_summary in body
 
     def test_includes_the_thesis_sentence(self):
@@ -314,14 +348,14 @@ class TestBuildPrBody:
         doc or walkthrough."""
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "SELECT 1;", self._validation(), self._fresh_build(), "claims_ops_team")
         assert "wrongful-denial incident" in body
         assert "erasing the evidence" in body
 
     def test_includes_generated_sql(self):
         finding = _make_investigator_finding()
         sentinel = _make_sentinel_finding()
-        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "CREATE TABLE claims_quarantine AS SELECT 1;", self._validation(), "claims_ops_team")
+        body = _build_pr_body("INC-1", sentinel, finding, FIX_TARGET_CLAIMS, "CREATE TABLE claims_quarantine AS SELECT 1;", self._validation(), self._fresh_build(), "claims_ops_team")
         assert "CREATE TABLE claims_quarantine AS SELECT 1;" in body
 
 
@@ -333,50 +367,119 @@ class TestBuildPrBody:
 
 @pytest.fixture
 def claims_db(tmp_path) -> Path:
-    """5-row claims-shaped db, 2 negative billing_amount rows -- same
-    fixture shape as tests/test_sql_validation.py's source_db, reused here
-    so the retry loop is exercised against real, deterministic validation."""
+    """Shaped for BOTH validation passes now (docs/decisions/0008's Part D
+    amendment): `claims` (5 rows, 2 negative -- what the populated-db pass
+    checks, same fixture shape as tests/test_sql_validation.py's source_db),
+    `mart_billing` (the same 5 rows -- claims' stated upstream source, what
+    a from-scratch-derived candidate fix reads FROM in the populated-db
+    pass), and `raw_patients` (the same 5 rows again, TEXT billing_amount --
+    what the fresh-build pass seeds ITS OWN scratch db from). All three are
+    independent tables in this one db; the fresh-build pass never touches
+    `claims`/`mart_billing` here at all, it only ever reads `raw_patients`
+    to build its own separate, genuinely-fresh copy from scratch.
+    """
     db_path = tmp_path / "healthcare.db"
     conn = sqlite3.connect(str(db_path))
+    rows = [("RP-1", 100.0), ("RP-2", -50.0), ("RP-3", 200.0), ("RP-4", -75.0), ("RP-5", 300.0)]
+
     conn.execute("CREATE TABLE claims (claim_id TEXT PRIMARY KEY, billing_amount REAL)")
-    conn.executemany(
-        "INSERT INTO claims VALUES (?, ?)",
-        [("CLM-1", 100.0), ("CLM-2", -50.0), ("CLM-3", 200.0), ("CLM-4", -75.0), ("CLM-5", 300.0)],
-    )
+    conn.executemany("INSERT INTO claims VALUES (?, ?)", rows)
+
+    conn.execute("CREATE TABLE mart_billing (id TEXT, billing_amount REAL)")
+    conn.executemany("INSERT INTO mart_billing VALUES (?, ?)", rows)
+
+    conn.execute('CREATE TABLE raw_patients ("id" TEXT, "billing_amount" TEXT)')
+    conn.executemany("INSERT INTO raw_patients VALUES (?, ?)", [(r[0], str(r[1])) for r in rows])
+
     conn.commit()
     conn.close()
     return db_path
 
 
+# Fresh-db-safe stub transform files for the 3 stages that are never the
+# fix under test in these unit tests -- run_fresh_build always executes
+# the FULL sequence regardless of which single stage is the candidate, so
+# these need to exist and actually work, not just the fix's own file.
+_STUB_STAGING_PATIENTS_SQL = """
+CREATE TABLE IF NOT EXISTS staging_patients AS SELECT * FROM raw_patients WHERE 0;
+DELETE FROM staging_patients;
+INSERT INTO staging_patients SELECT * FROM raw_patients;
+"""
+
+_STUB_MART_BILLING_SQL = """
+CREATE TABLE IF NOT EXISTS mart_billing AS SELECT id, CAST(billing_amount AS REAL) AS billing_amount FROM staging_patients WHERE 0;
+DELETE FROM mart_billing;
+INSERT INTO mart_billing SELECT id, CAST(billing_amount AS REAL) FROM staging_patients;
+"""
+
+_STUB_MART_DEMOGRAPHICS_SQL = """
+CREATE TABLE IF NOT EXISTS mart_demographics AS SELECT * FROM staging_patients WHERE 0;
+DELETE FROM mart_demographics;
+INSERT INTO mart_demographics SELECT * FROM staging_patients;
+"""
+
+_STUB_CLAIMS_SQL = """
+CREATE TABLE IF NOT EXISTS claims AS SELECT * FROM mart_billing WHERE 0;
+CREATE TABLE IF NOT EXISTS claims_quarantine AS SELECT * FROM mart_billing WHERE 0;
+DELETE FROM claims;
+DELETE FROM claims_quarantine;
+INSERT INTO claims SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) >= 0;
+INSERT INTO claims_quarantine SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) < 0;
+"""
+
+
+@pytest.fixture
+def data_platform_repo(tmp_path) -> Path:
+    """A data-platform-repo-shaped directory with fresh-db-safe stub
+    transform files for all 4 real stage names. Individual tests overwrite
+    whichever file is the one under test with their own candidate content
+    (or leave the stub in place, when a test's OWN fix targets a different
+    stage than the one it's directly asserting on)."""
+    repo_path = tmp_path / "data-platform"
+    transform_dir = repo_path / "transform"
+    transform_dir.mkdir(parents=True)
+    (transform_dir / "staging_patients.sql").write_text(_STUB_STAGING_PATIENTS_SQL)
+    (transform_dir / "mart_billing.sql").write_text(_STUB_MART_BILLING_SQL)
+    (transform_dir / "mart_demographics.sql").write_text(_STUB_MART_DEMOGRAPHICS_SQL)
+    (transform_dir / "claims.sql").write_text(_STUB_CLAIMS_SQL)
+    return repo_path
+
+
 CORRECT_CLAIMS_FIX_SQL = """
-CREATE TABLE claims_new AS SELECT * FROM claims WHERE billing_amount >= 0;
-CREATE TABLE claims_quarantine AS SELECT * FROM claims WHERE billing_amount < 0;
-DROP TABLE claims;
-ALTER TABLE claims_new RENAME TO claims;
+CREATE TABLE IF NOT EXISTS claims AS SELECT * FROM mart_billing WHERE 0;
+CREATE TABLE IF NOT EXISTS claims_quarantine AS SELECT * FROM mart_billing WHERE 0;
+DELETE FROM claims;
+DELETE FROM claims_quarantine;
+INSERT INTO claims SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) >= 0;
+INSERT INTO claims_quarantine SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) < 0;
 """
 
 INCOMPLETE_CLAIMS_FIX_SQL = """
-CREATE TABLE claims_new AS SELECT * FROM claims WHERE billing_amount >= 0 OR claim_id = 'CLM-2';
-CREATE TABLE claims_quarantine AS SELECT * FROM claims WHERE billing_amount < 0 AND claim_id != 'CLM-2';
-DROP TABLE claims;
-ALTER TABLE claims_new RENAME TO claims;
+CREATE TABLE IF NOT EXISTS claims AS SELECT * FROM mart_billing WHERE 0;
+CREATE TABLE IF NOT EXISTS claims_quarantine AS SELECT * FROM mart_billing WHERE 0;
+DELETE FROM claims;
+DELETE FROM claims_quarantine;
+INSERT INTO claims SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) >= 0 OR id = 'RP-2';
+INSERT INTO claims_quarantine SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) < 0 AND id != 'RP-2';
 """
 
 
 class TestGenerateAndValidate:
-    def test_succeeds_on_first_attempt(self, claims_db):
+    def test_succeeds_on_first_attempt(self, claims_db, data_platform_repo):
         backend = _ScriptedBackend(complete_responses=[_sql_response(CORRECT_CLAIMS_FIX_SQL)])
         finding = _make_investigator_finding()
-        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db)
+        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, data_platform_repo)
         assert success is True
         assert len(attempts) == 1
         assert attempts[0].validation.success is True
         assert attempts[0].validation.quarantine_count == 2
+        assert attempts[0].fresh_build is not None
+        assert attempts[0].fresh_build.success is True
 
-    def test_fails_then_succeeds_on_retry_with_error_fed_back(self, claims_db):
+    def test_fails_then_succeeds_on_retry_with_error_fed_back(self, claims_db, data_platform_repo):
         backend = _ScriptedBackend(complete_responses=[_sql_response(INCOMPLETE_CLAIMS_FIX_SQL), _sql_response(CORRECT_CLAIMS_FIX_SQL)])
         finding = _make_investigator_finding()
-        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db)
+        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, data_platform_repo)
         assert success is True
         assert len(attempts) == 2
         assert attempts[0].validation.success is False
@@ -387,30 +490,62 @@ class TestGenerateAndValidate:
         assert "Your previous attempt failed" in second_prompt
         assert INCOMPLETE_CLAIMS_FIX_SQL.strip() in second_prompt
 
-    def test_exhausts_all_attempts_and_reports_honest_failure(self, claims_db):
+    def test_exhausts_all_attempts_and_reports_honest_failure(self, claims_db, data_platform_repo):
         backend = _ScriptedBackend(complete_responses=[_sql_response(INCOMPLETE_CLAIMS_FIX_SQL)] * 3)
         finding = _make_investigator_finding()
-        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, max_retries=2)
+        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, data_platform_repo, max_retries=2)
         assert success is False
         assert len(attempts) == 3  # 1 initial + 2 retries, per DEFAULT_MAX_RETRIES
         assert all(a.validation.success is False for a in attempts)
 
-    def test_backend_error_is_recorded_and_retried_not_raised(self, claims_db):
+    def test_backend_error_is_recorded_and_retried_not_raised(self, claims_db, data_platform_repo):
         backend = _ScriptedBackend(complete_responses=[LLMBackendError("simulated timeout"), _sql_response(CORRECT_CLAIMS_FIX_SQL)])
         finding = _make_investigator_finding()
-        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db)
+        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, data_platform_repo)
         assert success is True
         assert len(attempts) == 2
         assert attempts[0].sql == ""
         assert "simulated timeout" in attempts[0].validation.error
 
-    def test_response_with_no_sql_block_is_recorded_and_retried(self, claims_db):
+    def test_response_with_no_sql_block_is_recorded_and_retried(self, claims_db, data_platform_repo):
         backend = _ScriptedBackend(complete_responses=[CompletionResult(text="I'm not sure how to fix this."), _sql_response(CORRECT_CLAIMS_FIX_SQL)])
         finding = _make_investigator_finding()
-        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db)
+        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, data_platform_repo)
         assert success is True
         assert len(attempts) == 2
         assert attempts[0].validation.success is False
+
+    def test_populated_db_passes_but_fresh_build_fails_is_a_failed_attempt(self, claims_db, data_platform_repo):
+        """The exact regression this second pass exists to catch: a fix
+        that cleans existing data correctly but can no longer bootstrap on
+        a genuinely fresh database (no CREATE TABLE at all)."""
+        fresh_db_unsafe_sql = """
+        DELETE FROM claims;
+        INSERT INTO claims SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) >= 0;
+        INSERT INTO claims_quarantine SELECT * FROM mart_billing WHERE CAST(billing_amount AS REAL) < 0;
+        """
+        # claims_quarantine doesn't exist yet in claims_db either -- but
+        # apply_and_validate_fix's populated-db pass runs fix_sql via
+        # executescript against a table that's never been asked to
+        # bootstrap claims_quarantine, so give it one to isolate what this
+        # test is actually about: fresh_build's own bootstrap failure.
+        conn = sqlite3.connect(str(claims_db))
+        conn.execute("CREATE TABLE claims_quarantine (claim_id TEXT, billing_amount REAL)")
+        conn.commit()
+        conn.close()
+
+        # Fails the same way on every attempt (the flaw is structural, not
+        # transient) -- 3 identical scripted responses so the retry loop
+        # can run to genuine exhaustion rather than starving mid-retry.
+        backend = _ScriptedBackend(complete_responses=[_sql_response(fresh_db_unsafe_sql)] * 3)
+        finding = _make_investigator_finding()
+        attempts, success = _generate_and_validate(backend, finding, FIX_TARGET_CLAIMS, "-- old sql", {}, claims_db, data_platform_repo)
+
+        assert success is False
+        assert len(attempts) == 3
+        assert attempts[0].validation.success is True  # pass 1 genuinely passed
+        assert attempts[0].fresh_build is not None
+        assert attempts[0].fresh_build.success is False  # pass 2 caught what pass 1 couldn't
 
 
 # ===========================================================================
@@ -461,9 +596,10 @@ class TestOpenPr:
             raise AssertionError("git must never be touched when a PR already exists for this branch")
 
         monkeypatch.setattr(remediator, "_run_git", _fail)
-        url, existed = _open_pr(FIX_TARGET_CLAIMS, "SELECT 1;", "title", "body", "INC-1", "guardian/fix-inc-1")
+        url, existed, updated = _open_pr(FIX_TARGET_CLAIMS, "SELECT 1;", "title", "body", "INC-1", "guardian/fix-inc-1")
         assert url == "https://github.com/x/y/pull/5"
         assert existed is True
+        assert updated is False
 
     def test_creates_new_pr_and_writes_the_fix_file(self, monkeypatch, tmp_path):
         monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: None)
@@ -483,10 +619,11 @@ class TestOpenPr:
             lambda cmd, **kw: subprocess.CompletedProcess(args=cmd, returncode=0, stdout="https://github.com/x/y/pull/9\n", stderr=""),
         )
 
-        url, existed = _open_pr(FIX_TARGET_CLAIMS, "SELECT 2;", "my title", "my body", "INC-2", "guardian/fix-inc-2")
+        url, existed, updated = _open_pr(FIX_TARGET_CLAIMS, "SELECT 2;", "my title", "my body", "INC-2", "guardian/fix-inc-2")
 
         assert url == "https://github.com/x/y/pull/9"
         assert existed is False
+        assert updated is False
         assert (tmp_path / "transform" / "claims.sql").read_text() == "SELECT 2;\n"
         assert git_calls[0] == ["fetch", "origin", "main"]
         assert git_calls[1] == ["checkout", "-B", "guardian/fix-inc-2", "origin/main"]
@@ -515,7 +652,7 @@ class TestOpenPr:
             lambda cmd, **kw: subprocess.CompletedProcess(args=cmd, returncode=0, stdout="https://github.com/x/y/pull/9\n", stderr=""),
         )
 
-        url, existed = _open_pr(FIX_TARGET_CLAIMS, "SELECT 2;", "title", "body", "INC-2", "guardian/fix-inc-2")
+        url, existed, updated = _open_pr(FIX_TARGET_CLAIMS, "SELECT 2;", "title", "body", "INC-2", "guardian/fix-inc-2")
         assert url == "https://github.com/x/y/pull/9"
         push_calls = [c for c in git_calls if c and c[0] == "push"]
         assert len(push_calls) == 2  # the failed --force-with-lease attempt, then the plain retry
@@ -532,6 +669,61 @@ class TestOpenPr:
         )
         with pytest.raises(RuntimeError):
             _open_pr(FIX_TARGET_CLAIMS, "SELECT 2;", "title", "body", "INC-2", "guardian/fix-inc-2")
+
+    def test_force_with_existing_pr_updates_the_same_branch_and_edits_the_pr(self, monkeypatch, tmp_path):
+        """The regeneration path this session actually needs: an existing
+        PR gets a new commit pushed onto ITS OWN branch (not main), and
+        `gh pr edit` updates its title/body -- no second PR is created."""
+        monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: "https://github.com/x/y/pull/2")
+        monkeypatch.setattr(remediator, "DATA_PLATFORM_REPO_PATH", tmp_path)
+        (tmp_path / "transform").mkdir()
+        (tmp_path / "transform" / "staging_patients.sql").write_text("-- old sql\n")
+
+        git_calls = []
+
+        def _fake_run_git(args, cwd):
+            git_calls.append(args)
+            return subprocess.CompletedProcess(args=["git"] + args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(remediator, "_run_git", _fake_run_git)
+
+        gh_calls = []
+
+        def _fake_subprocess_run(cmd, **kw):
+            gh_calls.append(cmd)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(remediator.subprocess, "run", _fake_subprocess_run)
+
+        url, existed, updated = _open_pr(
+            FIX_TARGET_STAGING, "SELECT 2;", "new title", "new body", "INC-2", "guardian/fix-inc-2", force=True,
+        )
+
+        assert url == "https://github.com/x/y/pull/2"
+        assert existed is True
+        assert updated is True
+        assert (tmp_path / "transform" / "staging_patients.sql").read_text() == "SELECT 2;\n"
+        # Checks out the branch itself, not main -- advancing it, not rebuilding it.
+        assert ["checkout", "-B", "guardian/fix-inc-2", "origin/guardian/fix-inc-2"] in git_calls
+        assert ["checkout", "-B", "guardian/fix-inc-2", "origin/main"] not in git_calls
+        assert any(c[:3] == ["gh", "pr", "edit"] for c in gh_calls)
+        assert not any(c[:3] == ["gh", "pr", "create"] for c in gh_calls)
+
+    def test_force_with_no_existing_pr_behaves_like_a_normal_create(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: None)
+        monkeypatch.setattr(remediator, "DATA_PLATFORM_REPO_PATH", tmp_path)
+        (tmp_path / "transform").mkdir()
+        (tmp_path / "transform" / "claims.sql").write_text("-- old sql\n")
+        monkeypatch.setattr(remediator, "_run_git", lambda args, cwd: subprocess.CompletedProcess(args=["git"] + args, returncode=0, stdout="", stderr=""))
+        monkeypatch.setattr(
+            remediator.subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(args=cmd, returncode=0, stdout="https://github.com/x/y/pull/9\n", stderr=""),
+        )
+
+        url, existed, updated = _open_pr(FIX_TARGET_CLAIMS, "SELECT 2;", "title", "body", "INC-2", "guardian/fix-inc-2", force=True)
+        assert url == "https://github.com/x/y/pull/9"
+        assert existed is False
+        assert updated is False
 
 
 # ===========================================================================
@@ -577,25 +769,23 @@ class TestRunRemediatorOrchestration:
         assert result.pr_url == "https://github.com/x/y/pull/3"
         assert backend.complete_calls == []
 
-    def test_successful_fix_opens_a_pr(self, monkeypatch, tmp_path, claims_db):
-        (tmp_path / "transform").mkdir()
-        (tmp_path / "transform" / "claims.sql").write_text("-- old build sql\n")
-
+    def test_successful_fix_opens_a_pr(self, monkeypatch, claims_db, data_platform_repo):
         monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: None)
         monkeypatch.setattr(remediator, "fetch_schema_and_owner", lambda ft: ({ft.table_name: [("billing_amount", "REAL")]}, "claims_ops_team"))
+        _patch_git_reads(monkeypatch, data_platform_repo)
 
         opened = {}
 
-        def _fake_open_pr(fix_target, sql, title, body, incident_id, branch_name):
+        def _fake_open_pr(fix_target, sql, title, body, incident_id, branch_name, force=False):
             opened["title"] = title
             opened["body"] = body
-            return "https://github.com/x/y/pull/42", False
+            return "https://github.com/x/y/pull/42", False, False
 
         monkeypatch.setattr(remediator, "_open_pr", _fake_open_pr)
 
         backend = _ScriptedBackend(complete_responses=[_sql_response(CORRECT_CLAIMS_FIX_SQL)])
         incident = _make_incident()
-        result = run_remediator(incident, backend, healthcare_db_path=claims_db, data_platform_repo_path=tmp_path)
+        result = run_remediator(incident, backend, healthcare_db_path=claims_db, data_platform_repo_path=data_platform_repo)
 
         assert result.status == "success"
         assert result.pr_url == "https://github.com/x/y/pull/42"
@@ -603,12 +793,10 @@ class TestRunRemediatorOrchestration:
         assert opened["title"] == "Guard claims build: quarantine sign-flipped billing (INC-20260101T000000Z-unitedhealthcare-diabetes)"
         assert "36" not in opened["title"]  # sanity: title is the deterministic template, not stuffed with numbers
 
-    def test_failed_validation_never_opens_a_pr(self, monkeypatch, tmp_path, claims_db):
-        (tmp_path / "transform").mkdir()
-        (tmp_path / "transform" / "claims.sql").write_text("-- old build sql\n")
-
+    def test_failed_validation_never_opens_a_pr(self, monkeypatch, claims_db, data_platform_repo):
         monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: None)
         monkeypatch.setattr(remediator, "fetch_schema_and_owner", lambda ft: ({}, "claims_ops_team"))
+        _patch_git_reads(monkeypatch, data_platform_repo)
 
         def _fail_open_pr(*a, **kw):
             raise AssertionError("a PR must never be opened when validation never succeeded")
@@ -617,45 +805,57 @@ class TestRunRemediatorOrchestration:
 
         backend = _ScriptedBackend(complete_responses=[_sql_response(INCOMPLETE_CLAIMS_FIX_SQL)] * 3)
         incident = _make_incident()
-        result = run_remediator(incident, backend, healthcare_db_path=claims_db, data_platform_repo_path=tmp_path)
+        result = run_remediator(incident, backend, healthcare_db_path=claims_db, data_platform_repo_path=data_platform_repo)
 
         assert result.status == "failed_validation"
         assert result.pr_url is None
         assert len(result.attempts) == 3
 
-    def test_inherited_from_targets_staging_patients_not_claims(self, monkeypatch, tmp_path, claims_db):
+    def test_inherited_from_targets_staging_patients_not_claims(self, monkeypatch, claims_db, data_platform_repo):
         """The demo story (Part D): the two root-cause shapes must touch
         DIFFERENT files. This is checked here at the unit level via which
         file fetch_schema_and_owner/current_sql end up reading."""
-        (tmp_path / "transform").mkdir()
-        (tmp_path / "transform" / "staging_patients.sql").write_text("-- old staging sql\n")
-
         seen_fix_targets = []
         monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: None)
+        _patch_git_reads(monkeypatch, data_platform_repo)
 
         def _fake_fetch(fix_target):
             seen_fix_targets.append(fix_target)
             return {}, "clinical_team"
 
         monkeypatch.setattr(remediator, "fetch_schema_and_owner", _fake_fetch)
-        monkeypatch.setattr(remediator, "_open_pr", lambda *a, **kw: ("https://github.com/x/y/pull/1", False))
+        monkeypatch.setattr(remediator, "_open_pr", lambda *a, **kw: ("https://github.com/x/y/pull/1", False, False))
 
-        # staging_patients-shaped db+fix, not claims -- reuses a "staging"
-        # table so validation still runs against something real.
+        # staging_patients-shaped ORIGINAL content in claims_db (what the
+        # populated-db pass diffs against) -- reuses a "staging" table so
+        # validation still runs against something real, distinct from the
+        # fresh-build pass's own from-scratch derivation off raw_patients.
+        # MUST correspond 1:1 with raw_patients' own 5 rows (same ids/
+        # values): a correct from-scratch fix re-derives staging_patients
+        # ENTIRELY from raw_patients, so apply_and_validate_fix's
+        # conservation check (clean + quarantine == the row count read
+        # from staging_patients BEFORE the fix ran) only holds if the two
+        # tables were already consistent with each other -- exactly what a
+        # real, correctly functioning pipeline guarantees.
         conn = sqlite3.connect(str(claims_db))
         conn.execute("CREATE TABLE staging_patients (id TEXT PRIMARY KEY, billing_amount TEXT)")
-        conn.executemany("INSERT INTO staging_patients VALUES (?, ?)", [("A", "100.0"), ("B", "-50.0")])
+        conn.executemany(
+            "INSERT INTO staging_patients VALUES (?, ?)",
+            [("RP-1", "100.0"), ("RP-2", "-50.0"), ("RP-3", "200.0"), ("RP-4", "-75.0"), ("RP-5", "300.0")],
+        )
         conn.commit()
         conn.close()
         staging_fix_sql = """
-        CREATE TABLE staging_patients_new AS SELECT * FROM staging_patients WHERE CAST(billing_amount AS REAL) >= 0;
-        CREATE TABLE staging_patients_quarantine AS SELECT * FROM staging_patients WHERE CAST(billing_amount AS REAL) < 0;
-        DROP TABLE staging_patients;
-        ALTER TABLE staging_patients_new RENAME TO staging_patients;
+        CREATE TABLE IF NOT EXISTS staging_patients AS SELECT * FROM raw_patients WHERE 0;
+        CREATE TABLE IF NOT EXISTS staging_patients_quarantine AS SELECT * FROM raw_patients WHERE 0;
+        DELETE FROM staging_patients;
+        DELETE FROM staging_patients_quarantine;
+        INSERT INTO staging_patients SELECT * FROM raw_patients WHERE CAST(billing_amount AS REAL) >= 0;
+        INSERT INTO staging_patients_quarantine SELECT * FROM raw_patients WHERE CAST(billing_amount AS REAL) < 0;
         """
         backend = _ScriptedBackend(complete_responses=[_sql_response(staging_fix_sql)])
         incident = _make_incident(root_cause="inherited_from:raw_patients")
-        result = run_remediator(incident, backend, healthcare_db_path=claims_db, data_platform_repo_path=tmp_path)
+        result = run_remediator(incident, backend, healthcare_db_path=claims_db, data_platform_repo_path=data_platform_repo)
 
         assert result.status == "success"
         assert seen_fix_targets[0].table_name == "staging_patients"
