@@ -1,0 +1,27 @@
+{
+  "incident_id": "INC-20260726T023526Z-unitedhealthcare-diabetes",
+  "status": "success",
+  "fix_target": {
+    "transform_file": "transform/claims.sql",
+    "table_name": "claims"
+  },
+  "pr_url": "https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/1",
+  "branch_name": "guardian/fix-inc-20260726t023526z-unitedhealthcare-diabetes",
+  "owner": "claims_ops_team",
+  "attempt_count": 1,
+  "validation": {
+    "success": true,
+    "original_count": 55500,
+    "clean_count": 54037,
+    "quarantine_count": 1463,
+    "violation_count_in_clean": 0,
+    "error": null
+  },
+  "fresh_build_validation": {
+    "success": true,
+    "failed_stage": null,
+    "error": null,
+    "violation_count_in_clean": 0,
+    "quarantine_row_count": 4
+  }
+}
