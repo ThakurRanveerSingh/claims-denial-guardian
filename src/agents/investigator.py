@@ -127,7 +127,20 @@ DESIGN_B_ALLOWED_TOOLS = [f"mcp__datahub__{tool}" for tool in DATAHUB_MCP_TOOLS]
 # --- Implementation-time defaults, named explicitly and .env-overridable —
 # same convention as src/agents/sentinel.py's SENTINEL_Z_THRESHOLD. ---
 DEFAULT_MAX_TURNS = 12  # LLD §5: estimated 6-7 turns for the happy path, 12 gives headroom
-DEFAULT_MAX_BUDGET_USD = 0.75  # LLD §7: "a starting default around $0.50-$1.00... not a precisely derived number"
+
+# Raised from the original $0.75 (LLD §7's untested "$0.50-$1.00" starting
+# guess) after two REAL, end-to-end-measured investigations both landed AT or
+# ABOVE that old default: Cigna/obesity cost $0.88 (Slice 4, 22 turns —
+# docs/walkthroughs/sprint-2.md's results table) and UnitedHealthcare/diabetes
+# cost $0.75 (the repo owner's own live `guardian run` during UAT). A default
+# that a real, correctly-functioning investigation can plausibly exceed isn't
+# a meaningful safety margin — it's a coin flip on BudgetExhaustedError that
+# has nothing to do with whether the detection/investigation logic actually
+# works. $2.00 keeps real headroom above both measured figures (>2x the
+# higher of the two) without abandoning the guardrail entirely; .env's
+# INVESTIGATOR_MAX_BUDGET_USD still overrides this per-environment for
+# anyone who wants it tighter or looser.
+DEFAULT_MAX_BUDGET_USD = 2.0
 
 
 def _default_max_turns() -> int:

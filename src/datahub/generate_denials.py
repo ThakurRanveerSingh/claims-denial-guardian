@@ -2,9 +2,30 @@
 """
 Generate the `denials` table content: LLD §3's denial rule + seeded anomaly.
 
-Run AFTER schema_sprint1.sql (claims must already exist and be populated):
+Run from src/datahub/, AFTER schema_sprint1.sql (claims must already exist
+and be populated). If using the second seeded scenario (decision 0006),
+seed_upstream_scenario.py must run before schema_sprint1.sql too — see
+lld-sprint2.md §10.7 for the full ordering. Full correct rebuild sequence:
+
+    python seed_upstream_scenario.py       # only if using the second scenario (decision 0006)
     sqlite3 healthcare.db < schema_sprint1.sql
     python generate_denials.py
+    python score_claims.py
+
+*** WARNING — cumulative-mutation gotcha, read before rerunning ***
+schema_sprint1.sql is what resets `claims.billing_amount` back to a clean
+copy of `mart_billing` (it DROPs and rebuilds `claims` from scratch). This
+script's seed_segment_spike() is TARGET-based and reads `claims.billing_amount`
+as it currently stands — it does NOT reset it first. That means: if you
+change SPIKE_SEGMENT (or rerun seed_upstream_scenario.py with a different
+UPSTREAM_SEGMENT) and then rerun THIS script WITHOUT first re-running
+`sqlite3 healthcare.db < schema_sprint1.sql`, the OLD segment's flips from
+the previous run are still sitting in `claims.billing_amount` (never reset),
+and the NEW segment's flips get added on top — `claims` ends up with
+STACKED, CUMULATIVE anomalies from multiple runs instead of a clean, single
+(or deliberately-composed, per decision 0006) scenario. Always re-run
+schema_sprint1.sql immediately before this script if you've changed which
+segment(s) are being seeded.
 
 Rule (docs/architecture/lld-sprint1.md §3):
   1. Every claim with billing_amount < 0 is denied, reason INVALID_BILLING_AMOUNT.
@@ -17,8 +38,17 @@ Rule (docs/architecture/lld-sprint1.md §3):
 
 import random
 import sqlite3
+import sys
+from pathlib import Path
 
-DB_PATH = "healthcare.db"
+# Resolved via __file__, not the caller's cwd (Item 2 fix, this session): a
+# bare "healthcare.db" would resolve against whatever directory the script
+# happens to be RUN from, not where the script itself lives. From the repo
+# root that silently created a brand-new, empty healthcare.db instead of
+# erroring — this is exactly the bug this fix removes. Same pattern already
+# used by src/agents/sentinel.py / investigator.py / orchestrator.py, and by
+# this directory's own verify_sentinel_math.py.
+DB_PATH = Path(__file__).resolve().parent / "healthcare.db"
 
 # Same seed convention as create_db.py — full reproducibility across reruns.
 RANDOM_SEED = 42
@@ -103,6 +133,14 @@ def deny_baseline(conn, rng, reason_code, rate):
 
 
 def main():
+    if not DB_PATH.exists():
+        print(f"ERROR: {DB_PATH} does not exist.")
+        print("This script expects claims/denials to already exist. Build the database first:")
+        print("    cd src/datahub/")
+        print("    python create_db.py /path/to/csvs      # if healthcare.db itself doesn't exist yet")
+        print("    sqlite3 healthcare.db < schema_sprint1.sql")
+        sys.exit(1)
+
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM denials")  # rerunning this script alone stays idempotent
     rng = random.Random(RANDOM_SEED)

@@ -18,8 +18,20 @@ import os
 import random
 import sqlite3
 import sys
+from pathlib import Path
 
 random.seed(42)
+
+# Resolved via __file__ (not the caller's cwd) so `python create_db.py ...`
+# always writes healthcare.db next to this script, regardless of which
+# directory it's invoked from — same fix, and same reasoning, as the
+# CWD-relative DB_PATH bug fixed in generate_denials.py / score_claims.py /
+# seed_upstream_scenario.py this session (a bare relative path would
+# silently resolve against the CALLER's cwd instead). No missing-file guard
+# needed here, unlike those three scripts: this script's whole job is
+# CREATING healthcare.db, so "the file doesn't exist yet" is the expected
+# starting state, not an error.
+DB_PATH = Path(__file__).resolve().parent / "healthcare.db"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -345,8 +357,7 @@ def main():
         sys.exit(1)
 
     csv_dir = os.path.abspath(args[0])
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(script_dir, "healthcare.db")
+    db_path = DB_PATH
 
     csv_path = find_csv(csv_dir)
     if not csv_path:

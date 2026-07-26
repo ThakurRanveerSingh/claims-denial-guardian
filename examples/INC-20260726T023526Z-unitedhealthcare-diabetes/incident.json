@@ -1,0 +1,149 @@
+{
+  "incident_id": "INC-20260726T023526Z-unitedhealthcare-diabetes",
+  "created_at": "2026-07-26T02:35:26.911852+00:00",
+  "status": "investigated",
+  "pipeline_stages_run": [
+    "sentinel",
+    "investigator"
+  ],
+  "sentinel": {
+    "segment": {
+      "insurance_provider": "UnitedHealthcare",
+      "medical_condition": "diabetes"
+    },
+    "segment_claim_count": 1806,
+    "segment_denial_count": 375,
+    "segment_denial_rate": 0.20764119601328904,
+    "baseline_denial_rate": 0.03667076395872909,
+    "z_score": 35.53319857453397,
+    "threshold": 3.5,
+    "method": "two_proportion_z_test",
+    "flagged": true,
+    "summary": "Denial rate for UnitedHealthcare/diabetes is 20.8%, 5.7x baseline (z=35.53) \u2014 statistically very unlikely to be random variation."
+  },
+  "investigator": {
+    "primary_root_cause": "introduced_at:claims",
+    "root_cause_breakdown": [
+      {
+        "classification": "introduced_at:claims (sign-flip bug in claims build from mart_billing)",
+        "claim_count": 325,
+        "pct": 86.67,
+        "note": "mart_billing.billing_amount is positive and exactly equals -1 * claims.billing_amount for these rows -- the value is correct one hop upstream and negated by the time it lands in claims. A full-claims-table check (not restricted to this segment) found every instance of this exact sign-flip pattern belongs to UnitedHealthcare/diabetes -- 0 occurrences elsewhere -- which is why this specific segment's denial rate spiked."
+      },
+      {
+        "classification": "inherited_from:raw_patients (pre-existing negative billing_amount in source data)",
+        "claim_count": 36,
+        "pct": 9.6,
+        "note": "billing_amount is negative and value-identical across mart_billing, staging_patients, and raw_patients (0 mismatches at each hop, checked table-wide). raw_patients has no further upstream lineage, so this is a pre-existing source-data defect, not something introduced by any pipeline transformation."
+      },
+      {
+        "classification": "no_data_quality_hypothesis:RANDOM_AUDIT",
+        "claim_count": 8,
+        "pct": 2.13,
+        "note": "Random audit denials have no underlying field-level defect to trace by design; not investigated further."
+      },
+      {
+        "classification": "no_data_quality_hypothesis:HIGH_RISK_SCORE",
+        "claim_count": 6,
+        "pct": 1.6,
+        "note": "Model risk-score denials have no underlying field-level defect to trace by design; not investigated further."
+      }
+    ],
+    "affected_branch": [
+      "claims",
+      "raw_patients"
+    ],
+    "datasets_checked_and_clean": [
+      "mart_billing",
+      "staging_patients"
+    ],
+    "lineage_path_walked": [
+      "get_lineage(upstream, urn=claims, max_hops=3) -> mart_billing (degree 1), mart_demographics (degree 1), staging_patients (degree 2), raw_patients (degree 3)",
+      "get_lineage(upstream, urn=raw_patients, max_hops=2) -> empty; raw_patients is the root of the chain, no further upstream"
+    ],
+    "evidence": [
+      {
+        "step": "1. Confirm live schema of claims and denials",
+        "tool": "Bash (sqlite3 .schema)",
+        "query_or_call": ".schema claims / .schema denials / .tables",
+        "result_summary": "claims has source_billing_rowid (FK-by-convention to mart_billing.rowid) and billing_amount REAL NOT NULL. denials has denial_reason_code with documented values INVALID_BILLING_AMOUNT | HIGH_RISK_SCORE | RANDOM_AUDIT. Full table list also surfaced mart_billing, mart_demographics, staging_patients, raw_patients, denial_model_scores, and passthrough views."
+      },
+      {
+        "step": "1b. Confirm live schema of upstream tables",
+        "tool": "Bash (sqlite3 .schema)",
+        "query_or_call": ".schema mart_billing / mart_demographics / staging_patients / raw_patients / denial_model_scores / views",
+        "result_summary": "mart_billing and staging_patients carry a pipeline_status column; v_staging_from_raw is a straight passthrough of raw_patients with lower/trim cleaning columns added; v_billing_from_staging casts staging billing_amount to REAL with no filtering or sign correction."
+      },
+      {
+        "step": "2. Walk lineage upstream from claims, live",
+        "tool": "mcp__datahub__get_lineage",
+        "query_or_call": "get_lineage(urn=claims, upstream=true, max_hops=3)",
+        "result_summary": "4 upstream datasets returned: mart_billing (degree 1, tagged critical, owned by finance_team), mart_demographics (degree 1, owned by research_team), staging_patients (degree 2), raw_patients (degree 3, tagged pii + quality_monitored). Confirms chain claims -> mart_billing -> staging_patients -> raw_patients, plus a separate claims -> mart_demographics branch unrelated to billing_amount."
+      },
+      {
+        "step": "3. Break flagged segment's denials down by denial_reason_code",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "SELECT denial_reason_code, COUNT(*) FROM claims JOIN denials ... WHERE insurance_provider='UnitedHealthcare' AND medical_condition='diabetes' GROUP BY denial_reason_code",
+        "result_summary": "INVALID_BILLING_AMOUNT=361, RANDOM_AUDIT=8, HIGH_RISK_SCORE=6 (sums to 375, matching Sentinel's flagged count). Only INVALID_BILLING_AMOUNT maps to a testable hypothesis (billing_amount < 0) per the schema's documented semantics."
+      },
+      {
+        "step": "4a. Confirm anomaly at claims itself",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "SELECT SUM(CASE WHEN billing_amount<0...), COUNT(*) FROM claims JOIN denials WHERE ... AND denial_reason_code='INVALID_BILLING_AMOUNT'",
+        "result_summary": "361/361 (100%) have billing_amount < 0 in claims, confirming the reason code is consistent with the documented negative-billing-amount defect."
+      },
+      {
+        "step": "4b. Test reproduction at immediate upstream hop (mart_billing)",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "LEFT JOIN mart_billing mb ON c.source_billing_rowid = mb.rowid; count mb.billing_amount < 0 and missing joins",
+        "result_summary": "0 missing joins (join key is sound). Only 36/361 (10%) reproduce (mb.billing_amount < 0); 325/361 (90%) do NOT reproduce -- mart_billing shows a positive value where claims shows negative. Anomaly does not reproduce for near-all rows at hop 1, but a non-trivial 36-row remainder does -- per the protocol this requires walking further before concluding 'introduced here'."
+      },
+      {
+        "step": "4c. Characterize the 325 non-reproducing rows",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "SELECT SUM(CASE WHEN mb.billing_amount = -1*c.billing_amount ...) vs total non-reproducing; sample rows",
+        "result_summary": "All 325/325 non-reproducing rows satisfy mart_billing.billing_amount = -1 * claims.billing_amount exactly -- a precise sign flip, not random corruption. Sampled rows confirm (e.g. CLM-000069: mart=+35776.82, claims=-35776.82)."
+      },
+      {
+        "step": "4d. Test reproduction of the remaining 36 at next hop (staging_patients)",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "JOIN mart_billing.rowid = staging_patients.rowid (full-table mismatch check) + segment-filtered negative count",
+        "result_summary": "0 mismatches between mart_billing.billing_amount and CAST(staging_patients.billing_amount) across the ENTIRE table (exact passthrough, confirms rowid alignment is a true 1:1 mapping, not coincidental). All 36/36 flagged rows reproduce billing_amount < 0 at staging_patients."
+      },
+      {
+        "step": "4e. Test reproduction of the remaining 36 at next hop (raw_patients)",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "JOIN staging_patients.rowid = raw_patients.rowid (full-table mismatch check) + segment-filtered negative count",
+        "result_summary": "0 mismatches between staging_patients.billing_amount and raw_patients.billing_amount across the entire table (exact passthrough, consistent with v_staging_from_raw being a pure passthrough view). All 36/36 flagged rows reproduce billing_amount < 0 at raw_patients."
+      },
+      {
+        "step": "4f. Confirm raw_patients is the root (no further upstream)",
+        "tool": "mcp__datahub__get_lineage",
+        "query_or_call": "get_lineage(urn=raw_patients, upstream=true, max_hops=2)",
+        "result_summary": "0 upstream entities returned -- raw_patients is the root source table, so the 36-row defect is classified inherited_from:raw_patients rather than needing further tracing."
+      },
+      {
+        "step": "5. Quantify each explanation as a fraction of all 375 flagged denials",
+        "tool": "Bash (sqlite3, arithmetic)",
+        "query_or_call": "325/375, 36/375, 8/375, 6/375",
+        "result_summary": "86.67% sign-flip introduced at claims, 9.6% inherited pre-existing defect from raw_patients, 2.13% RANDOM_AUDIT (no hypothesis), 1.6% HIGH_RISK_SCORE (no hypothesis). Reported as four separate root_cause_breakdown entries rather than blended."
+      },
+      {
+        "step": "6. Check whether the sign-flip bug is segment-specific or systemic",
+        "tool": "Bash (sqlite3)",
+        "query_or_call": "SELECT insurance_provider, medical_condition, COUNT(*) FROM claims JOIN mart_billing WHERE mb.billing_amount = -1*c.billing_amount AND mb.billing_amount>=0 GROUP BY 1,2 (whole-table, not segment-filtered)",
+        "result_summary": "All 325 sign-flip occurrences in the entire claims table belong to UnitedHealthcare/diabetes -- 0 elsewhere. The claims-build bug is fully localized to this exact segment, directly explaining why Sentinel's z-score flagged only this segment."
+      }
+    ],
+    "root_cause_summary": "Sentinel flagged UnitedHealthcare/diabetes for a denial rate 5.7x baseline. Breaking the 375 denials down by reason code, 361 (96.3%) are INVALID_BILLING_AMOUNT -- the only reason code with a testable data-quality hypothesis (billing_amount < 0) in this schema; RANDOM_AUDIT (8) and HIGH_RISK_SCORE (6) have no field-level defect to trace by design. Of the 361, walking the lineage one hop at a time (claims -> mart_billing -> staging_patients -> raw_patients) shows two distinct, non-overlapping causes. The dominant one (325 claims, 86.7% of all flagged denials) is a sign-flip bug: mart_billing holds the correct positive billing_amount, but claims holds its exact negation -- the defect is introduced in the process that builds claims from mart_billing, not upstream. A whole-table check confirms this exact sign-flip pattern occurs nowhere else in claims outside this segment, which is the direct explanation for the anomalous spike. A separate, smaller group (36 claims, 9.6%) already has negative billing_amount at every upstream hop including raw_patients, the root of the lineage with no further upstream -- a pre-existing source-data defect that was simply passed through unchanged (mart_billing and staging_patients were verified as exact, zero-mismatch passthroughs across their entire tables, not just this segment). Remediation should target (a) the claims-build logic for the sign-flip, and (b) raw_patients data entry/collection for the smaller inherited defect.",
+    "confidence": "high",
+    "backend_used": "claude_code",
+    "turns_used": 22
+  },
+  "cost": {
+    "sentinel_llm_calls": 0,
+    "investigator_turns_or_calls": 22,
+    "investigator_cost_usd": 0.7532424000000001,
+    "wall_clock_seconds": 162.6075734589831
+  }
+}

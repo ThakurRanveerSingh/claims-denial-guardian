@@ -2,8 +2,11 @@
 """
 Score every claim with the toy denial-risk heuristic (LLD §2).
 
-Run AFTER generate_denials.py (denials must already exist so
-segment_denial_rate can be computed):
+Run from src/datahub/, AFTER generate_denials.py (denials must already exist
+so segment_denial_rate can be computed). Full correct rebuild sequence
+(lld-sprint2.md §10.7 — see generate_denials.py's docstring for the
+cumulative-mutation gotcha this ordering avoids):
+    python seed_upstream_scenario.py       # only if using the second scenario (decision 0006)
     sqlite3 healthcare.db < schema_sprint1.sql
     python generate_denials.py
     python score_claims.py
@@ -21,10 +24,17 @@ it doesn't just describe what already happened.
 
 import sqlite3
 import statistics
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
-DB_PATH = "healthcare.db"
+# Resolved via __file__, not the caller's cwd (Item 2 fix, this session) —
+# same reasoning as generate_denials.py's DB_PATH: a bare "healthcare.db"
+# resolves against whatever directory the script is RUN from, and sqlite3
+# silently creates an empty file there instead of erroring, which is exactly
+# the confusing failure mode this fix removes.
+DB_PATH = Path(__file__).resolve().parent / "healthcare.db"
 MODEL_VERSION = "toy-denial-risk-v1"
 
 DENIAL_RATE_WEIGHT = 0.6
@@ -81,6 +91,14 @@ def score_claim(billing_amount, segment_stats):
 
 
 def main():
+    if not DB_PATH.exists():
+        print(f"ERROR: {DB_PATH} does not exist.")
+        print("This script expects claims/denials to already be populated. Run first:")
+        print("    cd src/datahub/")
+        print("    sqlite3 healthcare.db < schema_sprint1.sql")
+        print("    python generate_denials.py")
+        sys.exit(1)
+
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM denial_model_scores")  # rerunning this script alone stays idempotent
 

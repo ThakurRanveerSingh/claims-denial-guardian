@@ -40,8 +40,15 @@ Full sequence, run from src/datahub/:
 
 import random
 import sqlite3
+import sys
+from pathlib import Path
 
-DB_PATH = "healthcare.db"
+# Resolved via __file__, not the caller's cwd (Item 2 fix, this session) —
+# same reasoning as generate_denials.py's DB_PATH: a bare "healthcare.db"
+# resolves against whatever directory the script is RUN from, and sqlite3
+# silently creates an empty file there instead of erroring, which is exactly
+# the confusing failure mode this fix removes.
+DB_PATH = Path(__file__).resolve().parent / "healthcare.db"
 
 # Distinct from generate_denials.py's RANDOM_SEED = 42 — a different,
 # deliberately-chosen value rather than a reused one, so the two scenarios'
@@ -136,6 +143,14 @@ def seed_upstream_scenario(conn, rng):
 
 
 def main():
+    if not DB_PATH.exists():
+        print(f"ERROR: {DB_PATH} does not exist.")
+        print("This script expects raw_patients/staging_patients/mart_billing to already")
+        print("exist. Build the database first:")
+        print("    cd src/datahub/")
+        print("    python create_db.py /path/to/csvs")
+        sys.exit(1)
+
     conn = sqlite3.connect(DB_PATH)
     rng = random.Random(UPSTREAM_SEED)
 
