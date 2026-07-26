@@ -33,6 +33,7 @@ from agents.scribe import (
     _assertion_urn_for,
     _build_doc_description,
     _current_tag_urns,
+    _ensure_assertion_defined,
     _github_blob_url,
     _has_billing_amount_column,
     _parse_doc_entries,
@@ -217,6 +218,20 @@ class TestWriteHelpers:
         wrote = _apply_incident_tag(emitter, "urn:li:dataset:x", {GUARDIAN_TAG_URN, "urn:li:tag:pii"})
         assert wrote is False
         assert emitter.emitted == []
+
+    def test_ensure_assertion_defined_description_includes_entity_name(self):
+        """Part D's hands-on UAT finding: two assertions on different
+        datasets must not read as "the same assertion" via identical
+        description text, even though their URNs are already distinct."""
+        emitter = _FakeEmitter()
+        _ensure_assertion_defined(emitter, "urn:li:assertion:x-claims", "urn:li:dataset:x", "claims")
+        _ensure_assertion_defined(emitter, "urn:li:assertion:x-raw_patients", "urn:li:dataset:y", "raw_patients")
+
+        claims_desc = emitter.emitted[0].aspect.description
+        raw_desc = emitter.emitted[1].aspect.description
+        assert claims_desc != raw_desc
+        assert "claims" in claims_desc
+        assert "raw_patients" in raw_desc
 
     def test_append_incident_doc_note_appends_to_existing(self):
         emitter = _FakeEmitter()

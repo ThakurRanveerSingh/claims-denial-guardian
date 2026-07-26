@@ -397,7 +397,16 @@ def _append_incident_doc_note(
     return True
 
 
-def _ensure_assertion_defined(emitter: DatahubRestEmitter, assertion_urn: str, dataset_urn: str) -> None:
+def _ensure_assertion_defined(emitter: DatahubRestEmitter, assertion_urn: str, dataset_urn: str, entity_name: str) -> None:
+    """`entity_name` (the bare table name, e.g. "claims") is included in the
+    description text itself, not just encoded in the URN — found necessary
+    during Part D's hands-on UAT: two assertions on different datasets with
+    word-for-word identical descriptions ("...on this dataset.") read as
+    "the same assertion" at a glance in the DataHub UI, even though they're
+    genuinely distinct entities with their own URNs and run-event histories.
+    The URN alone was correct; the human-facing text needed the same
+    specificity.
+    """
     field_urn = f"urn:li:schemaField:({dataset_urn},{BILLING_AMOUNT_COLUMN})"
     info = AssertionInfoClass(
         type="DATASET",
@@ -411,7 +420,7 @@ def _ensure_assertion_defined(emitter: DatahubRestEmitter, assertion_urn: str, d
             ),
         ),
         source=AssertionSourceClass(type="INFERRED"),
-        description=f"Guardian: {BILLING_AMOUNT_COLUMN} must never be negative on this dataset.",
+        description=f"Guardian: {BILLING_AMOUNT_COLUMN} must never be negative on {entity_name}.",
     )
     emitter.emit(MetadataChangeProposalWrapper(entityUrn=assertion_urn, aspect=info))
 
@@ -535,7 +544,7 @@ async def _run_scribe_async(incident, repo_root: Path) -> ScribeResult:
                     if await _assertion_already_exists(session, assertion_urn):
                         entity_result.assertion_already_defined = True
                     else:
-                        _ensure_assertion_defined(emitter, assertion_urn, entity_urn)
+                        _ensure_assertion_defined(emitter, assertion_urn, entity_urn, entity_name)
                         entity_result.assertion_defined = True
 
                     unexpected_count = _unexpected_count_for(entity_name, finding)
