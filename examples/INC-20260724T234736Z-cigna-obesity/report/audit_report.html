@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audit Report — INC-20260724T234736Z-cigna-obesity</title>
+<style>
+  :root {
+    --critical: #c0392b;
+    --high: #e67e22;
+    --moderate: #d4a017;
+    --cleared: #2e7d32;
+    --unexamined: #78909c;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --border: #d8d8d8;
+    --panel: #f7f7f8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0;
+    padding: 2rem;
+    line-height: 1.5;
+    max-width: 980px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    border-bottom: 3px solid var(--border);
+    padding-bottom: 1rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.5rem; word-break: break-word; }
+  .severity-badge {
+    display: inline-block;
+    padding: 0.35rem 0.9rem;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: white;
+    white-space: nowrap;
+  }
+  .severity-critical { background: var(--critical); }
+  .severity-high { background: var(--high); }
+  .severity-moderate { background: var(--moderate); }
+  .meta { color: #555; font-size: 0.95rem; }
+  section { margin-bottom: 2.2rem; }
+  h2 {
+    font-size: 1.15rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.4rem;
+  }
+  h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.75rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.5rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--panel); }
+  .chart-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin: 0.75rem 0; }
+  .bar-row { display: flex; align-items: center; gap: 0.75rem; margin: 0.4rem 0; }
+  .bar-label { width: 160px; flex-shrink: 0; font-size: 0.9rem; }
+  .bar-track { flex-grow: 1; background: #eaeaea; border-radius: 3px; height: 22px; position: relative; }
+  .bar-fill { height: 100%; border-radius: 3px; }
+  .bar-fill-segment { background: var(--critical); }
+  .bar-fill-baseline { background: var(--unexamined); }
+  .bar-value { margin-left: 0.6rem; font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+  .split-bar { display: flex; width: 100%; height: 26px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
+  .split-segment { height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.6rem; font-size: 0.88rem; }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  .lineage-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
+  .lineage-node {
+    padding: 0.5rem 0.9rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .node-implicated { background: #fdecea; border-color: var(--critical); color: var(--critical); }
+  .node-cleared { background: #eaf6ea; border-color: var(--cleared); color: var(--cleared); }
+  .node-unexamined { background: #eceff1; border-color: var(--unexamined); color: #37474f; }
+  .lineage-arrow { font-size: 1.1rem; color: #888; }
+  .lineage-caption { margin: 0 0 0.5rem 0; font-size: 0.95rem; }
+  .actions, .outstanding { background: var(--panel); border-left: 4px solid var(--unexamined); padding: 0.9rem 1.1rem; border-radius: 4px; }
+  .outstanding { border-left-color: var(--moderate); }
+  .appendix { background: var(--panel); border: 1px dashed var(--border); border-radius: 6px; padding: 1rem 1.2rem; font-size: 0.88rem; color: #555; }
+  .appendix table { font-size: 0.85rem; }
+  .appendix code { background: rgba(0,0,0,0.06); padding: 0.1rem 0.3rem; border-radius: 3px; }
+  footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; color: #666; }
+  a { color: #1a5fb4; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14161a; color: #e6e6e6; }
+    .chart-panel, .actions, .outstanding { background: #1e2126; border-color: #33373d; }
+    .appendix { background: #1a1c20; border-color: #3a3d43; color: #a8adb3; }
+    .appendix code { background: rgba(255,255,255,0.08); }
+    th { background: #24272d; }
+    th, td { border-color: #33373d; }
+    .bar-track { background: #2a2d33; }
+    .node-cleared { background: #113319; }
+    .node-implicated { background: #3a1613; }
+    .node-unexamined { background: #23262b; color: #cfd8dc; }
+    a { color: #6fa8f5; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>INC-20260724T234736Z-cigna-obesity</h1>
+  <span class="severity-badge severity-critical">Critical</span>
+  <span class="meta">Status: investigated &middot; Generated: 2026-07-27T04:23:31.179836+00:00</span>
+</header>
+
+<section>
+  <h2>What was detected</h2>
+  <div class="chart-panel">
+    <div class="bar-row">
+      <div class="bar-label">Segment rate</div>
+      <div class="bar-track"><div class="bar-fill bar-fill-segment" style="width:100.0%"></div></div>
+      <div class="bar-value">16.0% (298/1864)</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">Baseline rate</div>
+      <div class="bar-track"><div class="bar-fill bar-fill-baseline" style="width:23.9%"></div></div>
+      <div class="bar-value">3.8% (2046/53636)</div>
+    </div>
+  </div>
+  <p>Sentinel flagged Cigna / obesity for a denial rate of 16.0% (298 of 1864 claims), compared to a baseline of 3.8% built from every other segment (2046 of 53636 claims) — this segment is excluded from its own baseline, so a real spike here can&#x27;t inflate the very baseline it&#x27;s measured against. This is a statistically significant deviation: a standard two-proportion statistical test comparing this segment&#x27;s rate to the baseline produces a z-score of 25.69, well above the flagging threshold of 3.5. The four counts behind this calculation — this segment&#x27;s claims and denials, and the baseline&#x27;s claims and denials — are 1864 and 298 (segment), 53636 and 2046 (baseline), stated here so the result can be independently recomputed. The exact calculation method is documented in the Technical Appendix below.</p>
+</section>
+
+<section>
+  <h2>What the investigation established</h2>
+  <p>Root cause: a pre-existing issue inherited from raw_patients, the original source data. Confidence: high.<br><br>Sentinel flagged Cigna/obesity for a 15.99% denial rate (4.2x baseline). Breaking the 298 denials down by reason code shows 280 (93.96%) are INVALID_BILLING_AMOUNT, with a smaller unrelated remainder of 11 HIGH_RISK_SCORE and 7 RANDOM_AUDIT denials that have no field-level defect to trace by design. For the 280 INVALID_BILLING_AMOUNT claims, billing_amount &lt; 0 was checked at every hop of the confirmed lineage chain (claims -&gt; mart_billing -&gt; staging_patients -&gt; raw_patients), verifying row alignment via rowid at each hop before trusting the count. The negative value reproduces at exactly 280/280 (100%) at every single hop, including raw_patients, which has no further upstream lineage registered. This means the bad data was never introduced by any transform in this pipeline -- it is already present in the earliest available source data. The elevated denial rate for this segment is a downstream symptom of a pre-existing data-quality defect inherited from raw_patients, not a bug introduced by mart_billing, staging_patients, or the claims derivation itself.<br><br>The complete technical trace behind this conclusion — every query run and every check performed — is in the Technical Appendix below.</p>
+
+  <h3>Origin split</h3>
+  <div class="split-bar"><div class="split-segment" style="width:93.96%;background:#c0392b" title="Inherited from raw_patients (original source data): 280 (94.0%)"></div><div class="split-segment" style="width:3.69%;background:#e67e22" title="High Risk Score (no data-quality hypothesis to trace): 11 (3.7%)"></div><div class="split-segment" style="width:2.35%;background:#7f8c8d" title="Random Audit (no data-quality hypothesis to trace): 7 (2.4%)"></div></div><div class="legend"><span class="legend-item"><span class="swatch" style="background:#c0392b"></span>Inherited from raw_patients (original source data) (280)</span><span class="legend-item"><span class="swatch" style="background:#e67e22"></span>High Risk Score (no data-quality hypothesis to trace) (11)</span><span class="legend-item"><span class="swatch" style="background:#7f8c8d"></span>Random Audit (no data-quality hypothesis to trace) (7)</span></div>
+
+  <h3>Pipeline stages examined</h3>
+  <p class="lineage-caption"><strong>4 of 5 pipeline stages implicated</strong></p><div class="lineage-row"><div class="lineage-node node-implicated">raw_patients</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-implicated">staging_patients</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-implicated">mart_billing</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-unexamined">mart_demographics</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-implicated">claims</div></div><div class="legend"><span class="legend-item"><span class="swatch" style="background:var(--critical)"></span>Implicated</span><span class="legend-item"><span class="swatch" style="background:var(--cleared)"></span>Cleared (checked, clean)</span><span class="legend-item"><span class="swatch" style="background:var(--unexamined)"></span>Not examined</span></div>
+
+  <h3>Root cause breakdown</h3>
+  <table><thead><tr><th>Classification</th><th>Claims</th><th>%</th><th>Note</th></tr></thead><tbody><tr><td>Inherited from raw_patients (original source data)</td><td>280</td><td>94.0%</td><td>billing_amount &lt; 0 reproduces at 100% across every hop (claims, mart_billing, staging_patients, raw_patients) for all 280 INVALID_BILLING_AMOUNT-denied claims in the segment. raw_patients has zero upstream lineage, so the negative value is already present in the earliest available data — not introduced by any transform in this pipeline.</td></tr><tr><td>High Risk Score (no data-quality hypothesis to trace)</td><td>11</td><td>3.7%</td><td>Denials from the toy risk-scoring model exceeding a threshold. No underlying field-level defect to trace by design in this schema; not investigated further per scope.</td></tr><tr><td>Random Audit (no data-quality hypothesis to trace)</td><td>7</td><td>2.4%</td><td>Baseline random-audit denials, unrelated to any data defect by design. Not investigated further per scope.</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>Member impact</h2>
+  <p>Denial counts for this segment, by reason code — read live from the database at report-generation time, not from a cached figure.</p>
+  <table><thead><tr><th>Denial reason</th><th>Claims</th></tr></thead><tbody><tr><td>INVALID_BILLING_AMOUNT</td><td>280</td></tr><tr><td>HIGH_RISK_SCORE</td><td>11</td></tr><tr><td>RANDOM_AUDIT</td><td>7</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>Actions taken</h2>
+  <div class="actions">DataHub writeback (Scribe):<br>  raw_patients: tag already present, documentation note already present<br>  staging_patients: tag already present, documentation note already present<br>  mart_billing: tag already present, documentation note already present<br>  claims: tag already present, documentation note already present<br>  Documentation link: https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260724T234736Z-cigna-obesity/incident.json<br>Fix opened (Remediator):<br>  Pull request: https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/2<br>  File changed: transform/staging_patients.sql</div>
+</section>
+
+<section>
+  <h2>Outstanding items</h2>
+  <div class="outstanding">Rows in staging_patients_quarantine (see the PR above for the exact count) require human review — suggested owner: clinical_team.</div>
+</section>
+
+<section>
+  <h2>Technical Appendix</h2>
+  <div class="appendix"><p>This section is the raw technical trace Investigator used to reach its conclusion — included for reproducibility and engineering review. Compliance readers do not need to read this section.</p><p><strong>Statistical method</strong>: <code>two_proportion_z_test()</code> in <code>src/agents/sentinel.py</code> (two-proportion z-test, leave-one-out baseline).</p><p><strong>Raw lineage trace</strong>: get_lineage(claims, upstream, max_hops=3) -&gt; mart_billing (degree 1), mart_demographics (degree 1), staging_patients (degree 2), raw_patients (degree 3) &rarr; get_lineage_paths_between(raw_patients -&gt; claims, direction=downstream) -&gt; single path: raw_patients -&gt; staging_patients -&gt; mart_billing -&gt; claims &rarr; get_lineage(raw_patients, upstream, max_hops=3) -&gt; 0 upstream entities (raw_patients is the pipeline root)</p><p><strong>Evidence log</strong>:</p><table><thead><tr><th>Step</th><th>Tool</th><th>Query/Call</th><th>Result</th></tr></thead><tbody><tr><td>1. Confirm schema of claims and denials</td><td>mcp__datahub__get_entities</td><td>get_entities([claims, denials])</td><td>claims has source_billing_rowid, billing_amount, insurance_provider, medical_condition, etc. denials has claim_id (FK to claims), denial_reason_code, denial_amount.</td></tr><tr><td>1b. Confirm schema of upstream tables before querying them</td><td>mcp__datahub__get_entities</td><td>get_entities([mart_billing, staging_patients, raw_patients])</td><td>mart_billing: billing_amount REAL (no explicit FK column, sqlite implicit rowid). staging_patients: billing_amount TEXT, no FK column. raw_patients: billing_amount TEXT, no FK column, no schema pointer to further upstream.</td></tr><tr><td>2. Walk lineage upstream from claims</td><td>mcp__datahub__get_lineage</td><td>get_lineage(urn=claims, upstream=true, max_hops=3)</td><td>4 upstream datasets: mart_billing (degree 1), mart_demographics (degree 1), staging_patients (degree 2), raw_patients (degree 3).</td></tr><tr><td>2b. Confirm exact path from raw_patients to claims</td><td>mcp__datahub__get_lineage_paths_between</td><td>get_lineage_paths_between(raw_patients, claims, direction=downstream)</td><td>Single dataset-level path: raw_patients -&gt; staging_patients -&gt; mart_billing -&gt; claims.</td></tr><tr><td>2c. Confirm raw_patients has no further upstream</td><td>mcp__datahub__get_lineage</td><td>get_lineage(urn=raw_patients, upstream=true, max_hops=3)</td><td>0 upstream entities returned -- raw_patients is the root of the registered pipeline.</td></tr><tr><td>3a. Confirm exact segment value strings</td><td>bash/sqlite3</td><td>SELECT DISTINCT insurance_provider/medical_condition FROM claims WHERE ... LIKE &#x27;%igna%&#x27;/&#x27;%besi%&#x27;</td><td>Confirmed exact values: insurance_provider=&#x27;Cigna&#x27;, medical_condition=&#x27;obesity&#x27;.</td></tr><tr><td>3b. Break down flagged segment&#x27;s denials by reason code</td><td>bash/sqlite3</td><td>SELECT d.denial_reason_code, COUNT(*) FROM claims c JOIN denials d ON d.claim_id=c.claim_id WHERE insurance_provider=&#x27;Cigna&#x27; AND medical_condition=&#x27;obesity&#x27; GROUP BY d.denial_reason_code</td><td>INVALID_BILLING_AMOUNT=280, HIGH_RISK_SCORE=11, RANDOM_AUDIT=7 (sums to Sentinel&#x27;s 298 denied).</td></tr><tr><td>3c. Confirm INVALID_BILLING_AMOUNT claims actually have billing_amount&lt;0 in claims</td><td>bash/sqlite3</td><td>SELECT COUNT(*), SUM(CASE WHEN billing_amount&lt;0 THEN 1 ELSE 0 END) FROM claims JOIN denials ... WHERE denial_reason_code=&#x27;INVALID_BILLING_AMOUNT&#x27;</td><td>280/280 have billing_amount &lt; 0 in claims.</td></tr><tr><td>4a. Test reproduction at immediate upstream hop (mart_billing)</td><td>bash/sqlite3</td><td>LEFT JOIN mart_billing mb ON mb.rowid = c.source_billing_rowid; count mb.billing_amount&lt;0 and missing joins</td><td>280/280 negative in mart_billing, 0 missing joins -- reproduces 100% at first hop.</td></tr><tr><td>4b. Verify mart_billing.rowid aligns with staging_patients.rowid before trusting next hop</td><td>bash/sqlite3</td><td>JOIN staging_patients sp ON sp.rowid=mb.rowid; compare date_of_admission, discharge_date, numeric billing_amount</td><td>55500/55500 rows align on dates and numeric billing_amount -- rowid join to staging_patients is valid (an earlier text-equality check on billing_amount undercounted due to TEXT vs REAL formatting, not misalignment).</td></tr><tr><td>4c. Test reproduction at staging_patients</td><td>bash/sqlite3</td><td>LEFT JOIN staging_patients sp ON sp.rowid = c.source_billing_rowid; count CAST(sp.billing_amount AS REAL)&lt;0</td><td>280/280 negative in staging_patients, 0 missing joins -- still reproduces 100%.</td></tr><tr><td>4d. Verify staging_patients.rowid aligns with raw_patients.rowid before trusting next hop</td><td>bash/sqlite3</td><td>JOIN raw_patients rp ON rp.rowid=sp.rowid; compare dates and numeric billing_amount</td><td>55500/55500 rows align -- rowid join to raw_patients is valid.</td></tr><tr><td>4e. Test reproduction at raw_patients (final available hop)</td><td>bash/sqlite3</td><td>LEFT JOIN raw_patients rp ON rp.rowid = c.source_billing_rowid; count CAST(rp.billing_amount AS REAL)&lt;0</td><td>280/280 negative in raw_patients, 0 missing joins -- reproduces 100% all the way to the pipeline root.</td></tr></tbody></table></div>
+</section>
+
+<footer>
+  Full incident record: <a href="https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260724T234736Z-cigna-obesity/incident.json">https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260724T234736Z-cigna-obesity/incident.json</a>
+</footer>
+
+</body>
+</html>

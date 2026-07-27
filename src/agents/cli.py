@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument(
         "--stage",
         required=True,
-        choices=["remediate"],
+        choices=["remediate", "writeback"],
         help="Which downstream stage to (re-)run against the saved incident.",
     )
     resume_parser.add_argument(

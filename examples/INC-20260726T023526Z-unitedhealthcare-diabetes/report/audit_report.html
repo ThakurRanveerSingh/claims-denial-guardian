@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audit Report — INC-20260726T023526Z-unitedhealthcare-diabetes</title>
+<style>
+  :root {
+    --critical: #c0392b;
+    --high: #e67e22;
+    --moderate: #d4a017;
+    --cleared: #2e7d32;
+    --unexamined: #78909c;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --border: #d8d8d8;
+    --panel: #f7f7f8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0;
+    padding: 2rem;
+    line-height: 1.5;
+    max-width: 980px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    border-bottom: 3px solid var(--border);
+    padding-bottom: 1rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.5rem; word-break: break-word; }
+  .severity-badge {
+    display: inline-block;
+    padding: 0.35rem 0.9rem;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: white;
+    white-space: nowrap;
+  }
+  .severity-critical { background: var(--critical); }
+  .severity-high { background: var(--high); }
+  .severity-moderate { background: var(--moderate); }
+  .meta { color: #555; font-size: 0.95rem; }
+  section { margin-bottom: 2.2rem; }
+  h2 {
+    font-size: 1.15rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.4rem;
+  }
+  h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.75rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.5rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--panel); }
+  .chart-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin: 0.75rem 0; }
+  .bar-row { display: flex; align-items: center; gap: 0.75rem; margin: 0.4rem 0; }
+  .bar-label { width: 160px; flex-shrink: 0; font-size: 0.9rem; }
+  .bar-track { flex-grow: 1; background: #eaeaea; border-radius: 3px; height: 22px; position: relative; }
+  .bar-fill { height: 100%; border-radius: 3px; }
+  .bar-fill-segment { background: var(--critical); }
+  .bar-fill-baseline { background: var(--unexamined); }
+  .bar-value { margin-left: 0.6rem; font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+  .split-bar { display: flex; width: 100%; height: 26px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
+  .split-segment { height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.6rem; font-size: 0.88rem; }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  .lineage-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
+  .lineage-node {
+    padding: 0.5rem 0.9rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .node-implicated { background: #fdecea; border-color: var(--critical); color: var(--critical); }
+  .node-cleared { background: #eaf6ea; border-color: var(--cleared); color: var(--cleared); }
+  .node-unexamined { background: #eceff1; border-color: var(--unexamined); color: #37474f; }
+  .lineage-arrow { font-size: 1.1rem; color: #888; }
+  .lineage-caption { margin: 0 0 0.5rem 0; font-size: 0.95rem; }
+  .actions, .outstanding { background: var(--panel); border-left: 4px solid var(--unexamined); padding: 0.9rem 1.1rem; border-radius: 4px; }
+  .outstanding { border-left-color: var(--moderate); }
+  .appendix { background: var(--panel); border: 1px dashed var(--border); border-radius: 6px; padding: 1rem 1.2rem; font-size: 0.88rem; color: #555; }
+  .appendix table { font-size: 0.85rem; }
+  .appendix code { background: rgba(0,0,0,0.06); padding: 0.1rem 0.3rem; border-radius: 3px; }
+  footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; color: #666; }
+  a { color: #1a5fb4; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14161a; color: #e6e6e6; }
+    .chart-panel, .actions, .outstanding { background: #1e2126; border-color: #33373d; }
+    .appendix { background: #1a1c20; border-color: #3a3d43; color: #a8adb3; }
+    .appendix code { background: rgba(255,255,255,0.08); }
+    th { background: #24272d; }
+    th, td { border-color: #33373d; }
+    .bar-track { background: #2a2d33; }
+    .node-cleared { background: #113319; }
+    .node-implicated { background: #3a1613; }
+    .node-unexamined { background: #23262b; color: #cfd8dc; }
+    a { color: #6fa8f5; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>INC-20260726T023526Z-unitedhealthcare-diabetes</h1>
+  <span class="severity-badge severity-critical">Critical</span>
+  <span class="meta">Status: investigated &middot; Generated: 2026-07-27T04:23:31.117900+00:00</span>
+</header>
+
+<section>
+  <h2>What was detected</h2>
+  <div class="chart-panel">
+    <div class="bar-row">
+      <div class="bar-label">Segment rate</div>
+      <div class="bar-track"><div class="bar-fill bar-fill-segment" style="width:100.0%"></div></div>
+      <div class="bar-value">20.8% (375/1806)</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">Baseline rate</div>
+      <div class="bar-track"><div class="bar-fill bar-fill-baseline" style="width:17.7%"></div></div>
+      <div class="bar-value">3.7% (1969/53694)</div>
+    </div>
+  </div>
+  <p>Sentinel flagged UnitedHealthcare / diabetes for a denial rate of 20.8% (375 of 1806 claims), compared to a baseline of 3.7% built from every other segment (1969 of 53694 claims) — this segment is excluded from its own baseline, so a real spike here can&#x27;t inflate the very baseline it&#x27;s measured against. This is a statistically significant deviation: a standard two-proportion statistical test comparing this segment&#x27;s rate to the baseline produces a z-score of 35.53, well above the flagging threshold of 3.5. The four counts behind this calculation — this segment&#x27;s claims and denials, and the baseline&#x27;s claims and denials — are 1806 and 375 (segment), 53694 and 1969 (baseline), stated here so the result can be independently recomputed. The exact calculation method is documented in the Technical Appendix below.</p>
+</section>
+
+<section>
+  <h2>What the investigation established</h2>
+  <p>Root cause: a defect introduced during the claims build process itself. Confidence: high.<br><br>Sentinel flagged UnitedHealthcare/diabetes for a denial rate 5.7x baseline. Breaking the 375 denials down by reason code, 361 (96.3%) are INVALID_BILLING_AMOUNT -- the only reason code with a testable data-quality hypothesis (billing_amount &lt; 0) in this schema; RANDOM_AUDIT (8) and HIGH_RISK_SCORE (6) have no field-level defect to trace by design. Of the 361, walking the lineage one hop at a time (claims -&gt; mart_billing -&gt; staging_patients -&gt; raw_patients) shows two distinct, non-overlapping causes. The dominant one (325 claims, 86.7% of all flagged denials) is a sign-flip bug: mart_billing holds the correct positive billing_amount, but claims holds its exact negation -- the defect is introduced in the process that builds claims from mart_billing, not upstream. A whole-table check confirms this exact sign-flip pattern occurs nowhere else in claims outside this segment, which is the direct explanation for the anomalous spike. A separate, smaller group (36 claims, 9.6%) already has negative billing_amount at every upstream hop including raw_patients, the root of the lineage with no further upstream -- a pre-existing source-data defect that was simply passed through unchanged (mart_billing and staging_patients were verified as exact, zero-mismatch passthroughs across their entire tables, not just this segment). Remediation should target (a) the claims-build logic for the sign-flip, and (b) raw_patients data entry/collection for the smaller inherited defect.<br><br>Also checked and confirmed clean, with no defect found: mart_billing, staging_patients.<br><br>The complete technical trace behind this conclusion — every query run and every check performed — is in the Technical Appendix below.</p>
+
+  <h3>Origin split</h3>
+  <div class="split-bar"><div class="split-segment" style="width:86.67%;background:#c0392b" title="Sign-flip bug in claims build from mart_billing: 325 (86.7%)"></div><div class="split-segment" style="width:9.60%;background:#e67e22" title="Pre-existing negative billing_amount in source data: 36 (9.6%)"></div><div class="split-segment" style="width:2.13%;background:#7f8c8d" title="Random Audit (no data-quality hypothesis to trace): 8 (2.1%)"></div><div class="split-segment" style="width:1.60%;background:#8e44ad" title="High Risk Score (no data-quality hypothesis to trace): 6 (1.6%)"></div></div><div class="legend"><span class="legend-item"><span class="swatch" style="background:#c0392b"></span>Sign-flip bug in claims build from mart_billing (325)</span><span class="legend-item"><span class="swatch" style="background:#e67e22"></span>Pre-existing negative billing_amount in source data (36)</span><span class="legend-item"><span class="swatch" style="background:#7f8c8d"></span>Random Audit (no data-quality hypothesis to trace) (8)</span><span class="legend-item"><span class="swatch" style="background:#8e44ad"></span>High Risk Score (no data-quality hypothesis to trace) (6)</span></div>
+
+  <h3>Pipeline stages examined</h3>
+  <p class="lineage-caption"><strong>2 of 5 pipeline stages implicated</strong></p><div class="lineage-row"><div class="lineage-node node-implicated">raw_patients</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-cleared">staging_patients</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-cleared">mart_billing</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-unexamined">mart_demographics</div><div class="lineage-arrow">&rarr;</div><div class="lineage-node node-implicated">claims</div></div><div class="legend"><span class="legend-item"><span class="swatch" style="background:var(--critical)"></span>Implicated</span><span class="legend-item"><span class="swatch" style="background:var(--cleared)"></span>Cleared (checked, clean)</span><span class="legend-item"><span class="swatch" style="background:var(--unexamined)"></span>Not examined</span></div>
+
+  <h3>Root cause breakdown</h3>
+  <table><thead><tr><th>Classification</th><th>Claims</th><th>%</th><th>Note</th></tr></thead><tbody><tr><td>Sign-flip bug in claims build from mart_billing</td><td>325</td><td>86.7%</td><td>mart_billing.billing_amount is positive and exactly equals -1 * claims.billing_amount for these rows -- the value is correct one hop upstream and negated by the time it lands in claims. A full-claims-table check (not restricted to this segment) found every instance of this exact sign-flip pattern belongs to UnitedHealthcare/diabetes -- 0 occurrences elsewhere -- which is why this specific segment&#x27;s denial rate spiked.</td></tr><tr><td>Pre-existing negative billing_amount in source data</td><td>36</td><td>9.6%</td><td>billing_amount is negative and value-identical across mart_billing, staging_patients, and raw_patients (0 mismatches at each hop, checked table-wide). raw_patients has no further upstream lineage, so this is a pre-existing source-data defect, not something introduced by any pipeline transformation.</td></tr><tr><td>Random Audit (no data-quality hypothesis to trace)</td><td>8</td><td>2.1%</td><td>Random audit denials have no underlying field-level defect to trace by design; not investigated further.</td></tr><tr><td>High Risk Score (no data-quality hypothesis to trace)</td><td>6</td><td>1.6%</td><td>Model risk-score denials have no underlying field-level defect to trace by design; not investigated further.</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>Member impact</h2>
+  <p>Denial counts for this segment, by reason code — read live from the database at report-generation time, not from a cached figure.</p>
+  <table><thead><tr><th>Denial reason</th><th>Claims</th></tr></thead><tbody><tr><td>INVALID_BILLING_AMOUNT</td><td>361</td></tr><tr><td>RANDOM_AUDIT</td><td>8</td></tr><tr><td>HIGH_RISK_SCORE</td><td>6</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>Actions taken</h2>
+  <div class="actions">DataHub writeback (Scribe):<br>  claims: tag already present, documentation note already present<br>  raw_patients: tag already present, documentation note already present<br>  Documentation link: https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260726T023526Z-unitedhealthcare-diabetes/incident.json<br>Fix opened (Remediator):<br>  Pull request: https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/1<br>  File changed: transform/claims.sql</div>
+</section>
+
+<section>
+  <h2>Outstanding items</h2>
+  <div class="outstanding">Rows in claims_quarantine (see the PR above for the exact count) require human review — suggested owner: claims_ops_team.</div>
+</section>
+
+<section>
+  <h2>Technical Appendix</h2>
+  <div class="appendix"><p>This section is the raw technical trace Investigator used to reach its conclusion — included for reproducibility and engineering review. Compliance readers do not need to read this section.</p><p><strong>Statistical method</strong>: <code>two_proportion_z_test()</code> in <code>src/agents/sentinel.py</code> (two-proportion z-test, leave-one-out baseline).</p><p><strong>Raw lineage trace</strong>: get_lineage(upstream, urn=claims, max_hops=3) -&gt; mart_billing (degree 1), mart_demographics (degree 1), staging_patients (degree 2), raw_patients (degree 3) &rarr; get_lineage(upstream, urn=raw_patients, max_hops=2) -&gt; empty; raw_patients is the root of the chain, no further upstream</p><p><strong>Evidence log</strong>:</p><table><thead><tr><th>Step</th><th>Tool</th><th>Query/Call</th><th>Result</th></tr></thead><tbody><tr><td>1. Confirm live schema of claims and denials</td><td>Bash (sqlite3 .schema)</td><td>.schema claims / .schema denials / .tables</td><td>claims has source_billing_rowid (FK-by-convention to mart_billing.rowid) and billing_amount REAL NOT NULL. denials has denial_reason_code with documented values INVALID_BILLING_AMOUNT | HIGH_RISK_SCORE | RANDOM_AUDIT. Full table list also surfaced mart_billing, mart_demographics, staging_patients, raw_patients, denial_model_scores, and passthrough views.</td></tr><tr><td>1b. Confirm live schema of upstream tables</td><td>Bash (sqlite3 .schema)</td><td>.schema mart_billing / mart_demographics / staging_patients / raw_patients / denial_model_scores / views</td><td>mart_billing and staging_patients carry a pipeline_status column; v_staging_from_raw is a straight passthrough of raw_patients with lower/trim cleaning columns added; v_billing_from_staging casts staging billing_amount to REAL with no filtering or sign correction.</td></tr><tr><td>2. Walk lineage upstream from claims, live</td><td>mcp__datahub__get_lineage</td><td>get_lineage(urn=claims, upstream=true, max_hops=3)</td><td>4 upstream datasets returned: mart_billing (degree 1, tagged critical, owned by finance_team), mart_demographics (degree 1, owned by research_team), staging_patients (degree 2), raw_patients (degree 3, tagged pii + quality_monitored). Confirms chain claims -&gt; mart_billing -&gt; staging_patients -&gt; raw_patients, plus a separate claims -&gt; mart_demographics branch unrelated to billing_amount.</td></tr><tr><td>3. Break flagged segment&#x27;s denials down by denial_reason_code</td><td>Bash (sqlite3)</td><td>SELECT denial_reason_code, COUNT(*) FROM claims JOIN denials ... WHERE insurance_provider=&#x27;UnitedHealthcare&#x27; AND medical_condition=&#x27;diabetes&#x27; GROUP BY denial_reason_code</td><td>INVALID_BILLING_AMOUNT=361, RANDOM_AUDIT=8, HIGH_RISK_SCORE=6 (sums to 375, matching Sentinel&#x27;s flagged count). Only INVALID_BILLING_AMOUNT maps to a testable hypothesis (billing_amount &lt; 0) per the schema&#x27;s documented semantics.</td></tr><tr><td>4a. Confirm anomaly at claims itself</td><td>Bash (sqlite3)</td><td>SELECT SUM(CASE WHEN billing_amount&lt;0...), COUNT(*) FROM claims JOIN denials WHERE ... AND denial_reason_code=&#x27;INVALID_BILLING_AMOUNT&#x27;</td><td>361/361 (100%) have billing_amount &lt; 0 in claims, confirming the reason code is consistent with the documented negative-billing-amount defect.</td></tr><tr><td>4b. Test reproduction at immediate upstream hop (mart_billing)</td><td>Bash (sqlite3)</td><td>LEFT JOIN mart_billing mb ON c.source_billing_rowid = mb.rowid; count mb.billing_amount &lt; 0 and missing joins</td><td>0 missing joins (join key is sound). Only 36/361 (10%) reproduce (mb.billing_amount &lt; 0); 325/361 (90%) do NOT reproduce -- mart_billing shows a positive value where claims shows negative. Anomaly does not reproduce for near-all rows at hop 1, but a non-trivial 36-row remainder does -- per the protocol this requires walking further before concluding &#x27;introduced here&#x27;.</td></tr><tr><td>4c. Characterize the 325 non-reproducing rows</td><td>Bash (sqlite3)</td><td>SELECT SUM(CASE WHEN mb.billing_amount = -1*c.billing_amount ...) vs total non-reproducing; sample rows</td><td>All 325/325 non-reproducing rows satisfy mart_billing.billing_amount = -1 * claims.billing_amount exactly -- a precise sign flip, not random corruption. Sampled rows confirm (e.g. CLM-000069: mart=+35776.82, claims=-35776.82).</td></tr><tr><td>4d. Test reproduction of the remaining 36 at next hop (staging_patients)</td><td>Bash (sqlite3)</td><td>JOIN mart_billing.rowid = staging_patients.rowid (full-table mismatch check) + segment-filtered negative count</td><td>0 mismatches between mart_billing.billing_amount and CAST(staging_patients.billing_amount) across the ENTIRE table (exact passthrough, confirms rowid alignment is a true 1:1 mapping, not coincidental). All 36/36 flagged rows reproduce billing_amount &lt; 0 at staging_patients.</td></tr><tr><td>4e. Test reproduction of the remaining 36 at next hop (raw_patients)</td><td>Bash (sqlite3)</td><td>JOIN staging_patients.rowid = raw_patients.rowid (full-table mismatch check) + segment-filtered negative count</td><td>0 mismatches between staging_patients.billing_amount and raw_patients.billing_amount across the entire table (exact passthrough, consistent with v_staging_from_raw being a pure passthrough view). All 36/36 flagged rows reproduce billing_amount &lt; 0 at raw_patients.</td></tr><tr><td>4f. Confirm raw_patients is the root (no further upstream)</td><td>mcp__datahub__get_lineage</td><td>get_lineage(urn=raw_patients, upstream=true, max_hops=2)</td><td>0 upstream entities returned -- raw_patients is the root source table, so the 36-row defect is classified inherited_from:raw_patients rather than needing further tracing.</td></tr><tr><td>5. Quantify each explanation as a fraction of all 375 flagged denials</td><td>Bash (sqlite3, arithmetic)</td><td>325/375, 36/375, 8/375, 6/375</td><td>86.67% sign-flip introduced at claims, 9.6% inherited pre-existing defect from raw_patients, 2.13% RANDOM_AUDIT (no hypothesis), 1.6% HIGH_RISK_SCORE (no hypothesis). Reported as four separate root_cause_breakdown entries rather than blended.</td></tr><tr><td>6. Check whether the sign-flip bug is segment-specific or systemic</td><td>Bash (sqlite3)</td><td>SELECT insurance_provider, medical_condition, COUNT(*) FROM claims JOIN mart_billing WHERE mb.billing_amount = -1*c.billing_amount AND mb.billing_amount&gt;=0 GROUP BY 1,2 (whole-table, not segment-filtered)</td><td>All 325 sign-flip occurrences in the entire claims table belong to UnitedHealthcare/diabetes -- 0 elsewhere. The claims-build bug is fully localized to this exact segment, directly explaining why Sentinel&#x27;s z-score flagged only this segment.</td></tr></tbody></table></div>
+</section>
+
+<footer>
+  Full incident record: <a href="https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260726T023526Z-unitedhealthcare-diabetes/incident.json">https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260726T023526Z-unitedhealthcare-diabetes/incident.json</a>
+</footer>
+
+</body>
+</html>

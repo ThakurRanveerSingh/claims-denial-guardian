@@ -281,12 +281,16 @@ def resume_incident(
     and `_existing_pr_url` correctly recognizes an already-open PR instead
     of treating this as a fresh incident needing a fresh one.
 
-    `stage`: currently only `"remediate"` is implemented — the concrete need
-    this was built for (Sprint 3 WP3: backfilling `incident.json`'s
-    `remediator` field for the two canonical demo incidents from a real
-    `run_remediator()` call, not a throwaway script). Structured so
-    `"writeback"` (re-run Scribe) can be added the same way later, not
-    hardcoded to assume `remediate` is the only possible resume point.
+    `stage`: `"remediate"` (built for Sprint 3 WP3: backfilling
+    `incident.json`'s `remediator` field for the two canonical demo
+    incidents from a real `run_remediator()` call, not a throwaway script)
+    or `"writeback"` (built the same session, same need: backfilling
+    `incident.json`'s `scribe` field from a real `run_scribe()` call —
+    Scribe is idempotent per decision 0007, so resuming it against an
+    incident whose DataHub tag/doc/assertion were already applied by an
+    earlier, disconnected run correctly reports `*_already_present=True`
+    rather than duplicating anything; verified live, not assumed, before
+    this was trusted for the real backfill).
     """
     incident = load_incident(examples_dir / incident_id / "incident.json")
 
@@ -303,8 +307,14 @@ def resume_incident(
         incident.remediator = run_remediator(incident, backend, **kwargs)
         if "remediator" not in incident.pipeline_stages_run:
             incident.pipeline_stages_run = incident.pipeline_stages_run + ["remediator"]
+    elif stage == "writeback":
+        if incident.investigator is None:
+            raise ValueError(f"{incident_id} has no InvestigatorFinding — nothing to write back")
+        incident.scribe = run_scribe(incident)
+        if "scribe" not in incident.pipeline_stages_run:
+            incident.pipeline_stages_run = incident.pipeline_stages_run + ["scribe"]
     else:
-        raise ValueError(f"resume_incident: unsupported stage {stage!r} (only 'remediate' is implemented)")
+        raise ValueError(f"resume_incident: unsupported stage {stage!r} (only 'remediate'/'writeback' are implemented)")
 
     return incident
 

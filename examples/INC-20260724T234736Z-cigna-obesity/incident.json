@@ -5,7 +5,8 @@
   "pipeline_stages_run": [
     "sentinel",
     "investigator",
-    "remediator"
+    "remediator",
+    "scribe"
   ],
   "sentinel": {
     "segment": {
@@ -147,7 +148,60 @@
     "investigator_cost_usd": 0.8798372999999999,
     "wall_clock_seconds": 148.94840595900314
   },
-  "scribe": null,
+  "scribe": {
+    "incident_id": "INC-20260724T234736Z-cigna-obesity",
+    "entities": [
+      {
+        "entity_name": "raw_patients",
+        "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:sqlite,healthcare.main.raw_patients,PROD)",
+        "tag_applied": false,
+        "tag_already_present": true,
+        "doc_note_added": false,
+        "doc_note_already_present": true,
+        "assertion_defined": false,
+        "assertion_already_defined": true,
+        "assertion_run_event_emitted": true,
+        "skipped_reason": null
+      },
+      {
+        "entity_name": "staging_patients",
+        "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:sqlite,healthcare.main.staging_patients,PROD)",
+        "tag_applied": false,
+        "tag_already_present": true,
+        "doc_note_added": false,
+        "doc_note_already_present": true,
+        "assertion_defined": false,
+        "assertion_already_defined": true,
+        "assertion_run_event_emitted": true,
+        "skipped_reason": null
+      },
+      {
+        "entity_name": "mart_billing",
+        "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:sqlite,healthcare.main.mart_billing,PROD)",
+        "tag_applied": false,
+        "tag_already_present": true,
+        "doc_note_added": false,
+        "doc_note_already_present": true,
+        "assertion_defined": false,
+        "assertion_already_defined": true,
+        "assertion_run_event_emitted": true,
+        "skipped_reason": null
+      },
+      {
+        "entity_name": "claims",
+        "entity_urn": "urn:li:dataset:(urn:li:dataPlatform:sqlite,healthcare.main.claims,PROD)",
+        "tag_applied": false,
+        "tag_already_present": true,
+        "doc_note_added": false,
+        "doc_note_already_present": true,
+        "assertion_defined": false,
+        "assertion_already_defined": true,
+        "assertion_run_event_emitted": true,
+        "skipped_reason": null
+      }
+    ],
+    "doc_url": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260724T234736Z-cigna-obesity/incident.json"
+  },
   "remediator": {
     "incident_id": "INC-20260724T234736Z-cigna-obesity",
     "status": "success",

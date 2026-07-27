@@ -30,9 +30,22 @@ instruction — real information belongs in the report; determinism is
 proven by the golden-file test normalizing/excluding that one named field
 when diffing (tests/test_reporter.py), not by omitting real information
 from the content.
+
+UAT amendment (Sprint 3 WP3 Part C squint test): the first version of this
+module put raw agent telemetry — Python function names, source file
+paths, literal SQL, `mcp__datahub__*` tool-call syntax — directly into the
+sections a compliance officer is meant to read standalone. Reading it cold
+as a non-technical reviewer (the repo owner's own explicit UAT method,
+not just re-inspecting the code) surfaced this directly. Fixed by keeping
+the raw evidence trail — genuinely valuable for reproducibility — but
+moving it to a clearly labeled Technical Appendix at the end of both
+formats, and rewriting `_detection_narrative()`/`_investigation_narrative()`
+so a compliance reader never has to see a function name, file path, or a
+structured/coded tag (e.g. `introduced_at:claims`) to follow sections 1-3.
 """
 
 import html
+import re
 import sqlite3
 import string
 from dataclasses import dataclass
@@ -172,50 +185,127 @@ def _incident_github_url(incident_id: str) -> str:
 
 
 def _detection_narrative(sentinel, baseline: BaselineContext) -> str:
+    """Plain prose only — no function names, file paths, or raw SQL (Part C
+    UAT amendment). The exact statistical method and formula still exist
+    in the report; they live in the Technical Appendix, not here."""
     s = sentinel
     return (
         f"Sentinel flagged {s.segment.insurance_provider} / {s.segment.medical_condition} for a denial "
-        f"rate of {s.segment_denial_rate:.1%} ({s.segment_denial_count}/{s.segment_claim_count} claims), "
-        f"against a leave-one-out baseline of {s.baseline_denial_rate:.1%} across every other segment "
-        f"({baseline.rest_denials}/{baseline.rest_claims} claims). Method: {s.method} (two-proportion "
-        f"z-test, leave-one-out baseline — the segment under test is excluded from the baseline it's "
-        f"compared against, so a real spike can't inflate its own baseline and dilute the signal). "
-        f"z = {s.z_score:.2f} against a flagging threshold of {s.threshold}. Recomputable directly from "
-        f"these four counts: segment claims = {baseline.segment_claims}, segment denials = "
-        f"{baseline.segment_denials}, baseline claims = {baseline.rest_claims}, baseline denials = "
-        f"{baseline.rest_denials} — see two_proportion_z_test() in src/agents/sentinel.py for the exact formula."
+        f"rate of {s.segment_denial_rate:.1%} ({s.segment_denial_count} of {s.segment_claim_count} claims), "
+        f"compared to a baseline of {s.baseline_denial_rate:.1%} built from every other segment "
+        f"({baseline.rest_denials} of {baseline.rest_claims} claims) — this segment is excluded from its "
+        f"own baseline, so a real spike here can't inflate the very baseline it's measured against. This "
+        f"is a statistically significant deviation: a standard two-proportion statistical test comparing "
+        f"this segment's rate to the baseline produces a z-score of {s.z_score:.2f}, well above the "
+        f"flagging threshold of {s.threshold}. The four counts behind this calculation — this segment's "
+        f"claims and denials, and the baseline's claims and denials — are {baseline.segment_claims} and "
+        f"{baseline.segment_denials} (segment), {baseline.rest_claims} and {baseline.rest_denials} "
+        f"(baseline), stated here so the result can be independently recomputed. The exact calculation "
+        f"method is documented in the Technical Appendix below."
     )
 
 
+def _plain_root_cause(primary_root_cause: str) -> str:
+    """Translates the structured, colon-separated primary_root_cause tag
+    (e.g. "introduced_at:claims") into a plain-English phrase — the
+    compliance-facing narrative must not show this coded format directly
+    (Part C UAT amendment)."""
+    if primary_root_cause.startswith("introduced_at:"):
+        table = primary_root_cause.split(":", 1)[1]
+        return f"a defect introduced during the {table} build process itself"
+    if primary_root_cause.startswith("inherited_from:"):
+        table = primary_root_cause.split(":", 1)[1]
+        return f"a pre-existing issue inherited from {table}, the original source data"
+    if primary_root_cause == "inconclusive":
+        return "a cause the investigation could not conclusively determine"
+    return primary_root_cause  # unknown shape -- show as-is rather than hide information
+
+
 def _investigation_narrative(finding) -> str:
+    """Plain prose only (Part C UAT amendment) — root_cause_summary is
+    Investigator's own narrative (already prose, kept verbatim: rewriting
+    it would mean editorializing another agent's finding, the same "don't
+    paraphrase what another stage already concluded" discipline
+    Remediator's PR body applies to this exact field). The RAW lineage
+    trace (tool-call syntax, `get_lineage(...)`) is deliberately NOT shown
+    here — it moved to the Technical Appendix."""
     if finding is None:
         return "No investigation was performed (Sentinel did not flag this segment)."
     lines = [
-        f"Primary root cause: {finding.primary_root_cause} (confidence: {finding.confidence}).",
+        f"Root cause: {_plain_root_cause(finding.primary_root_cause)}. Confidence: {finding.confidence}.",
         "",
         finding.root_cause_summary,
-        "",
-        f"Lineage path walked: {' -> '.join(finding.lineage_path_walked) if finding.lineage_path_walked else '(none recorded)'}",
     ]
     if finding.datasets_checked_and_clean:
-        lines.append(f"Checked and confirmed clean: {', '.join(finding.datasets_checked_and_clean)}")
+        lines.append("")
+        lines.append(f"Also checked and confirmed clean, with no defect found: {', '.join(finding.datasets_checked_and_clean)}.")
+    lines.append("")
+    lines.append(
+        "The complete technical trace behind this conclusion — every query run and every check "
+        "performed — is in the Technical Appendix below."
+    )
     return "\n".join(lines)
+
+
+def _plain_classification(classification: str) -> str:
+    """Root-cause-breakdown entries look like "introduced_at:claims
+    (sign-flip bug in claims build from mart_billing)" or
+    "no_known_data_quality_hypothesis:HIGH_RISK_SCORE" (the exact prefix
+    genuinely varies between real investigations — checked directly
+    against both real saved incidents, not assumed to be one fixed
+    string). Strips the coded tag, keeps the plain-language parenthetical
+    when there is one, and falls back to a readable phrase built from the
+    tag itself when there isn't (Part C UAT amendment)."""
+    paren_match = re.match(r"^\S+:\S+\s*\((.+)\)$", classification)
+    if paren_match:
+        text = paren_match.group(1)
+        return text[0].upper() + text[1:]
+    if classification.startswith("introduced_at:"):
+        return f"Introduced during the {classification.split(':', 1)[1]} build"
+    if classification.startswith("inherited_from:"):
+        return f"Inherited from {classification.split(':', 1)[1]} (original source data)"
+    if "hypothesis" in classification and ":" in classification:
+        reason = classification.split(":", 1)[1]
+        return f"{reason.replace('_', ' ').title()} (no data-quality hypothesis to trace)"
+    return classification  # unknown shape -- show as-is rather than hide information
 
 
 def _actions_taken_lines(incident) -> list:
     """Returns a list of plain-text lines (no markup) — each render format
     wraps/escapes these itself. Empty list means nothing has happened yet
     (both render functions turn that into an honest "nothing yet" message,
-    not a blank section)."""
+    not a blank section).
+
+    Tag/doc wording distinguishes "already present" from "applied/added
+    this run" — same three-way wording orchestrator.print_incident_summary()
+    already uses correctly. An earlier version of this function collapsed
+    both into one word ("applied"/"added"), which meant the report's own
+    claim couldn't actually show the real, sometimes-mixed idempotency
+    result (e.g. a tag shared with an earlier incident showing
+    already-present while that same run's documentation note is still
+    genuinely new) — caught during Part C UAT re-verification by checking
+    the report text against what the live Scribe run had actually just
+    printed, not by re-reading the code.
+    """
     lines = []
     if incident.scribe is not None and incident.scribe.entities:
         lines.append("DataHub writeback (Scribe):")
         for e in incident.scribe.entities:
             if e.entity_urn is None:
                 continue
-            tag = "applied" if (e.tag_applied or e.tag_already_present) else "not applied"
-            doc = "added" if (e.doc_note_added or e.doc_note_already_present) else "not added"
-            lines.append(f"  {e.entity_name}: tag {tag}, documentation note {doc}")
+            if e.tag_already_present:
+                tag = "tag already present"
+            elif e.tag_applied:
+                tag = "tag applied"
+            else:
+                tag = "tag not applied"
+            if e.doc_note_already_present:
+                doc = "documentation note already present"
+            elif e.doc_note_added:
+                doc = "documentation note added"
+            else:
+                doc = "documentation note not added"
+            lines.append(f"  {e.entity_name}: {tag}, {doc}")
         if incident.scribe.doc_url:
             lines.append(f"  Documentation link: {incident.scribe.doc_url}")
     if incident.remediator is not None and incident.remediator.status == "success" and incident.remediator.pr_url:
@@ -279,10 +369,14 @@ def _evidence_table_md(finding) -> str:
 
 
 def _breakdown_table_md(finding) -> str:
+    """Classification column uses _plain_classification() (Part C UAT
+    amendment) — the raw coded tag never appears in the main body; the
+    Technical Appendix's evidence table still has the full raw data for
+    anyone who wants it."""
     if finding is None or not finding.root_cause_breakdown:
         return "_(no investigation was performed)_"
     rows = [
-        (_escape_md_cell(e.classification), str(e.claim_count), f"{e.pct:.1f}%", _escape_md_cell(e.note))
+        (_escape_md_cell(_plain_classification(e.classification)), str(e.claim_count), f"{e.pct:.1f}%", _escape_md_cell(e.note))
         for e in finding.root_cause_breakdown
     ]
     return _md_table(["Classification", "Claims", "%", "Note"], rows)
@@ -292,6 +386,27 @@ def _member_impact_table_md(rows: list) -> str:
     if not rows:
         return "_(no denials recorded for this segment)_"
     return _md_table(["Denial reason", "Claims"], [(_escape_md_cell(r.category), str(r.claim_count)) for r in rows])
+
+
+def _technical_appendix_md(finding) -> str:
+    """Everything a compliance reader does NOT need: the raw lineage
+    trace (tool-call syntax) and the full evidence log (literal SQL, MCP
+    tool names). Kept verbatim, per the repo owner's explicit instruction
+    — reproducibility matters, it just doesn't belong in the sections a
+    non-technical reviewer reads first (Part C UAT amendment)."""
+    if finding is None:
+        return "_(no investigation was performed)_"
+    lineage = " -> ".join(finding.lineage_path_walked) if finding.lineage_path_walked else "(none recorded)"
+    return (
+        "This section is the raw technical trace Investigator used to reach its conclusion — "
+        "included for reproducibility and engineering review. Compliance readers do not need to "
+        "read this section.\n\n"
+        "**Statistical method**: `two_proportion_z_test()` in `src/agents/sentinel.py` "
+        "(two-proportion z-test, leave-one-out baseline).\n\n"
+        f"**Raw lineage trace**: {_escape_md_cell(lineage)}\n\n"
+        "**Evidence log**:\n\n"
+        f"{_evidence_table_md(finding)}"
+    )
 
 
 def generate_audit_report_md(incident, *, healthcare_db_path: Path = DB_PATH, generated_at: Optional[datetime] = None) -> str:
@@ -322,11 +437,11 @@ def generate_audit_report_md(incident, *, healthcare_db_path: Path = DB_PATH, ge
         generated_at=generated_at.isoformat(),
         detection_narrative=_detection_narrative(incident.sentinel, baseline),
         investigation_narrative=_investigation_narrative(incident.investigator),
-        evidence_table=_evidence_table_md(incident.investigator),
         breakdown_table=_breakdown_table_md(incident.investigator),
         member_impact_table=_member_impact_table_md(member_impact),
         actions_taken=actions_taken,
         outstanding_items=_outstanding_items_text(incident),
+        technical_appendix=_technical_appendix_md(incident.investigator),
         incident_json_url=_incident_github_url(incident.incident_id),
     )
 
@@ -357,9 +472,11 @@ def _evidence_table_html(finding) -> str:
 
 
 def _breakdown_table_html(finding) -> str:
+    """Classification column uses _plain_classification() (Part C UAT
+    amendment) — see _breakdown_table_md()'s own docstring."""
     if finding is None or not finding.root_cause_breakdown:
         return "<p><em>No investigation was performed.</em></p>"
-    rows = [(e.classification, e.claim_count, f"{e.pct:.1f}%", e.note) for e in finding.root_cause_breakdown]
+    rows = [(_plain_classification(e.classification), e.claim_count, f"{e.pct:.1f}%", e.note) for e in finding.root_cause_breakdown]
     return _html_table(["Classification", "Claims", "%", "Note"], rows)
 
 
@@ -369,7 +486,28 @@ def _member_impact_table_html(rows: list) -> str:
     return _html_table(["Denial reason", "Claims"], [(r.category, r.claim_count) for r in rows])
 
 
+def _technical_appendix_html(finding) -> str:
+    """HTML equivalent of _technical_appendix_md() — same content, same
+    "compliance readers don't need this" framing (Part C UAT amendment)."""
+    if finding is None:
+        return "<p><em>No investigation was performed.</em></p>"
+    lineage = " &rarr; ".join(html.escape(step) for step in finding.lineage_path_walked) if finding.lineage_path_walked else "(none recorded)"
+    return (
+        "<p>This section is the raw technical trace Investigator used to reach its conclusion — "
+        "included for reproducibility and engineering review. Compliance readers do not need to "
+        "read this section.</p>"
+        "<p><strong>Statistical method</strong>: <code>two_proportion_z_test()</code> in "
+        "<code>src/agents/sentinel.py</code> (two-proportion z-test, leave-one-out baseline).</p>"
+        f"<p><strong>Raw lineage trace</strong>: {lineage}</p>"
+        "<p><strong>Evidence log</strong>:</p>"
+        f"{_evidence_table_html(finding)}"
+    )
+
+
 def _origin_split_html(finding) -> str:
+    """Legend/tooltip text uses _plain_classification() (Part C UAT
+    amendment) — this diagram is one of the sections a compliance reader
+    looks at directly, same reasoning as the breakdown table."""
     if finding is None or not finding.root_cause_breakdown:
         return "<p><em>No investigation was performed.</em></p>"
     total = sum(e.claim_count for e in finding.root_cause_breakdown) or 1
@@ -377,11 +515,12 @@ def _origin_split_html(finding) -> str:
     for i, e in enumerate(finding.root_cause_breakdown):
         color = _ORIGIN_SPLIT_COLORS[i % len(_ORIGIN_SPLIT_COLORS)]
         pct = e.claim_count / total * 100
-        title = html.escape(f"{e.classification}: {e.claim_count} ({e.pct:.1f}%)")
+        plain = _plain_classification(e.classification)
+        title = html.escape(f"{plain}: {e.claim_count} ({e.pct:.1f}%)")
         segments.append(f'<div class="split-segment" style="width:{pct:.2f}%;background:{color}" title="{title}"></div>')
         legend_items.append(
             f'<span class="legend-item"><span class="swatch" style="background:{color}"></span>'
-            f"{html.escape(e.classification)} ({e.claim_count})</span>"
+            f"{html.escape(plain)} ({e.claim_count})</span>"
         )
     return f'<div class="split-bar">{"".join(segments)}</div><div class="legend">{"".join(legend_items)}</div>'
 
@@ -391,15 +530,28 @@ def _lineage_diagram_html(finding) -> str:
     each table is implicated/cleared/unexamined for THIS finding -- not
     `finding.lineage_path_walked` (free-text tool-call narration, not node
     names; see PIPELINE_TOPOLOGY's own comment for why membership-testing
-    against it wouldn't work)."""
+    against it wouldn't work).
+
+    Prepends a one-line caption ("N of 5 pipeline stages implicated") --
+    Part C UAT finding: both real incidents' diagrams are red-dominated
+    (3-4 of 5 boxes), so the distinguishing signal between two incidents
+    read side by side is real but not the FIRST thing that registers at a
+    genuine half-second glance. The caption gives an instant number to
+    anchor on before a viewer has to parse which specific boxes differ.
+    Computed from the exact same red/green node classification below, not
+    a second, separately-derived count that could drift out of sync with
+    the colors it's captioning.
+    """
     if finding is None:
         return "<p><em>No investigation was performed.</em></p>"
     affected = set(finding.affected_branch)
     cleared = set(finding.datasets_checked_and_clean)
     parts = []
+    implicated_count = 0
     for i, node in enumerate(PIPELINE_TOPOLOGY):
         if node in affected:
             css_class = "node-implicated"
+            implicated_count += 1
         elif node in cleared:
             css_class = "node-cleared"
         else:
@@ -414,7 +566,8 @@ def _lineage_diagram_html(finding) -> str:
         '<span class="legend-item"><span class="swatch" style="background:var(--unexamined)"></span>Not examined</span>'
         "</div>"
     )
-    return f'<div class="lineage-row">{"".join(parts)}</div>{legend}'
+    caption = f'<p class="lineage-caption"><strong>{implicated_count} of {len(PIPELINE_TOPOLOGY)} pipeline stages implicated</strong></p>'
+    return f'{caption}<div class="lineage-row">{"".join(parts)}</div>{legend}'
 
 
 def _actions_taken_html(incident) -> str:
@@ -456,11 +609,11 @@ def generate_audit_report_html(incident, *, healthcare_db_path: Path = DB_PATH, 
         investigation_narrative_html=html.escape(_investigation_narrative(incident.investigator)).replace("\n", "<br>"),
         origin_split_html=_origin_split_html(incident.investigator),
         lineage_diagram_html=_lineage_diagram_html(incident.investigator),
-        evidence_table_html=_evidence_table_html(incident.investigator),
         breakdown_table_html=_breakdown_table_html(incident.investigator),
         member_impact_table_html=_member_impact_table_html(member_impact),
         actions_taken_html=_actions_taken_html(incident),
         outstanding_items_html=html.escape(_outstanding_items_text(incident)),
+        technical_appendix_html=_technical_appendix_html(incident.investigator),
         incident_json_url=_incident_github_url(incident.incident_id),
     )
 

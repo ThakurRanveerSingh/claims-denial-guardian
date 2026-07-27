@@ -96,13 +96,19 @@
   .node-cleared { background: #eaf6ea; border-color: var(--cleared); color: var(--cleared); }
   .node-unexamined { background: #eceff1; border-color: var(--unexamined); color: #37474f; }
   .lineage-arrow { font-size: 1.1rem; color: #888; }
+  .lineage-caption { margin: 0 0 0.5rem 0; font-size: 0.95rem; }
   .actions, .outstanding { background: var(--panel); border-left: 4px solid var(--unexamined); padding: 0.9rem 1.1rem; border-radius: 4px; }
   .outstanding { border-left-color: var(--moderate); }
+  .appendix { background: var(--panel); border: 1px dashed var(--border); border-radius: 6px; padding: 1rem 1.2rem; font-size: 0.88rem; color: #555; }
+  .appendix table { font-size: 0.85rem; }
+  .appendix code { background: rgba(0,0,0,0.06); padding: 0.1rem 0.3rem; border-radius: 3px; }
   footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.85rem; color: #666; }
   a { color: #1a5fb4; }
   @media (prefers-color-scheme: dark) {
     body { background: #14161a; color: #e6e6e6; }
     .chart-panel, .actions, .outstanding { background: #1e2126; border-color: #33373d; }
+    .appendix { background: #1a1c20; border-color: #3a3d43; color: #a8adb3; }
+    .appendix code { background: rgba(255,255,255,0.08); }
     th { background: #24272d; }
     th, td { border-color: #33373d; }
     .bar-track { background: #2a2d33; }
@@ -145,11 +151,8 @@
   <h3>Origin split</h3>
   $origin_split_html
 
-  <h3>Lineage path walked</h3>
+  <h3>Pipeline stages examined</h3>
   $lineage_diagram_html
-
-  <h3>Evidence</h3>
-  $evidence_table_html
 
   <h3>Root cause breakdown</h3>
   $breakdown_table_html
@@ -169,6 +172,11 @@
 <section>
   <h2>Outstanding items</h2>
   <div class="outstanding">$outstanding_items_html</div>
+</section>
+
+<section>
+  <h2>Technical Appendix</h2>
+  <div class="appendix">$technical_appendix_html</div>
 </section>
 
 <footer>

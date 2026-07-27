@@ -358,7 +358,56 @@ class TestResumeIncident:
     def test_unsupported_stage_raises(self, tmp_path):
         incident_id = self._write_saved_incident(tmp_path)
         with pytest.raises(ValueError, match="unsupported stage"):
-            resume_incident(incident_id, "writeback", examples_dir=tmp_path)
+            resume_incident(incident_id, "not-a-real-stage", examples_dir=tmp_path)
+
+    def test_writeback_reuses_the_exact_saved_incident_id(self, monkeypatch, tmp_path):
+        """Same guarantee as remediate's own test: the incident_id passed
+        to run_scribe() must be the exact saved one -- Scribe's own
+        idempotency (decision 0007) is keyed on incident_id inside
+        institutionalMemory/assertion-run-event descriptions, so a fresh
+        ID here would look like a brand-new incident to Scribe too."""
+        incident_id = self._write_saved_incident(tmp_path)
+
+        seen_incident_ids = []
+
+        def _fake_run_scribe(incident, repo_root=None):
+            seen_incident_ids.append(incident.incident_id)
+            return ScribeResult(incident_id=incident.incident_id, doc_url="https://example.com/x")
+
+        monkeypatch.setattr(orchestrator, "run_scribe", _fake_run_scribe)
+
+        result = resume_incident(incident_id, "writeback", examples_dir=tmp_path)
+
+        assert seen_incident_ids == [incident_id]
+        assert result.incident_id == incident_id
+        assert result.scribe is not None
+        assert result.scribe.doc_url == "https://example.com/x"
+        assert "scribe" in result.pipeline_stages_run
+
+    def test_writeback_never_invokes_sentinel_investigator_or_remediator(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+
+        def _fail(*a, **kw):
+            raise AssertionError("resume_incident(stage='writeback') must never re-run Sentinel/Investigator/Remediator")
+
+        monkeypatch.setattr(orchestrator, "run_sentinel", _fail)
+        monkeypatch.setattr(orchestrator, "run_investigator", _fail)
+        monkeypatch.setattr(orchestrator, "run_remediator", _fail)
+        monkeypatch.setattr(orchestrator, "get_backend", _fail)
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident, repo_root=None: ScribeResult(incident_id=incident.incident_id))
+
+        resume_incident(incident_id, "writeback", examples_dir=tmp_path)  # must not raise
+
+    def test_writeback_no_investigator_finding_raises(self, monkeypatch, tmp_path):
+        sf = _make_sentinel_finding(flagged=False)
+        incident = _build_incident(
+            sf, investigator_finding=None, investigator_cost_usd=None, investigator_turns_or_calls=None,
+            wall_clock_seconds=0.1, created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        write_incident(incident, examples_dir=tmp_path)
+
+        with pytest.raises(ValueError, match="nothing to write back"):
+            resume_incident(incident.incident_id, "writeback", examples_dir=tmp_path)
 
     def test_no_investigator_finding_raises(self, monkeypatch, tmp_path):
         sf = _make_sentinel_finding(flagged=False)
@@ -1001,6 +1050,19 @@ class TestCli:
     def test_resume_command_unsupported_stage_rejected_by_argparse(self):
         with pytest.raises(SystemExit):
             cli.main(["resume", "INC-1", "--stage", "not-a-real-stage"])
+
+    def test_resume_command_writeback_stage_accepted(self, monkeypatch):
+        incident = _build_incident(
+            ALL_FAKE_SEGMENTS[0], investigator_finding=_make_investigator_finding(), investigator_cost_usd=0.1,
+            investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        received = {}
+        monkeypatch.setattr(cli, "resume_incident", lambda incident_id, stage, llm_backend_name=None: received.update(incident_id=incident_id, stage=stage) or incident)
+        monkeypatch.setattr(cli, "write_incident", lambda inc, examples_dir: "/tmp/fake/incident.json")
+        exit_code = cli.main(["resume", "INC-1", "--stage", "writeback"])
+        assert exit_code == 0
+        assert received["stage"] == "writeback"
 
     def test_resume_command_value_error_exits_two(self, monkeypatch, capsys):
         def _raise(*a, **kw):
