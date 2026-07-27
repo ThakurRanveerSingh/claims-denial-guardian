@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 from agents.investigator import EvidenceEntry, InvestigatorFinding, RootCauseBreakdownEntry, run_investigator
 from agents.llm_backend import LLMBackend, LLMBackendError, get_backend
 from agents.remediator import FixTarget, FreshBuildResult, RemediationAttempt, RemediatorResult, ValidationResult, run_remediator
+from agents.reporter import write_audit_reports
 from agents.scribe import ScribeEntityResult, ScribeResult, run_scribe
 from agents.sentinel import Segment, SentinelFinding, run_sentinel
 
@@ -367,8 +368,10 @@ def run_guardian(
     dry_run: bool = False,
     writeback: bool = True,
     remediate: bool = False,
+    generate_reports: bool = True,
     z_threshold: Optional[float] = None,
     max_budget_usd: Optional[float] = None,
+    healthcare_db_path: Optional[Path] = None,
 ) -> list[Incident]:
     """Run the full pipeline (§4.1): Sentinel across every segment, then
     Investigator on whichever ones need it. Returns one Incident PER SEGMENT
@@ -426,6 +429,25 @@ def run_guardian(
     gracefully (`status="no_fix_available"`) for an inconclusive finding or
     a root cause with no known fix shape — not special-cased here, same
     "the agent already handles it" reasoning as `writeback` above.
+
+    `generate_reports`: whether Reporter (Sprint 3 WP3, US-5) runs after
+    Remediator for each segment that was actually investigated, writing
+    `examples/<incident-id>/report/{audit_report.md,audit_report.html}`.
+    ON BY DEFAULT, unlike `writeback`/`remediate` — deliberately, and for a
+    real reason: Reporter is a pure read (the real `healthcare.db`, plus
+    whatever `Incident` fields are already in memory) followed by a local
+    file write. No DataHub write, no PR, no external system touched at
+    all — there is no consent story to gate the way there is for the other
+    two, so this parameter exists as a programmatic escape hatch (tests
+    exercising a segment that doesn't exist in the real `healthcare.db`,
+    which Reporter's own live db queries would otherwise fail against), not
+    a user-facing CLI flag.
+
+    `healthcare_db_path`: the real db file Reporter opens its OWN read-only
+    connection against (member-impact counts, the z-test's raw baseline
+    counts) — independent of `conn` above, which may be an in-memory or
+    test-fixture connection Reporter has no file path for. Defaults to this
+    module's own `DB_PATH` (the real, committed database) when not given.
     """
     own_conn = conn is None
     if conn is None:
@@ -495,6 +517,17 @@ def run_guardian(
                 # of whether Scribe just ran or was skipped.
                 incident.remediator = run_remediator(incident, backend)
                 incident.pipeline_stages_run = incident.pipeline_stages_run + ["remediator"]
+            if generate_reports:
+                # Unconditional by design (default True, no CLI flag,
+                # unlike writeback/remediate) — a pure read + local file
+                # write has no external side effect and therefore no
+                # consent story to gate. `generate_reports=False` exists as
+                # a programmatic escape hatch (tests using a segment that
+                # doesn't exist in the real healthcare.db, which Reporter's
+                # own live db queries would otherwise fail against), not a
+                # user-facing option.
+                write_audit_reports(incident, examples_dir=EXAMPLES_DIR, healthcare_db_path=healthcare_db_path or Path(DB_PATH))
+                incident.pipeline_stages_run = incident.pipeline_stages_run + ["report"]
             incidents.append(incident)
 
         return incidents

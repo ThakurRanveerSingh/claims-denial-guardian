@@ -23,6 +23,7 @@ from agents.orchestrator import (
     run_guardian,
     write_incident,
 )
+from agents.rich_output import RICH_AVAILABLE, print_dry_run_summary_rich, print_incident_summary_rich
 
 
 def _parse_segment(value: str) -> tuple[str, str]:
@@ -128,7 +129,10 @@ def _run_command(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         forced = Segment(*args.segment) if args.segment else None
-        print_dry_run_summary(incidents, forced_segment=forced)
+        if RICH_AVAILABLE:
+            print_dry_run_summary_rich(incidents, forced_segment=forced)
+        else:
+            print_dry_run_summary(incidents, forced_segment=forced)
         return 0
 
     interesting = [inc for inc in incidents if inc.status != "no_anomaly"]
@@ -141,8 +145,27 @@ def _run_command(args: argparse.Namespace) -> int:
 
     for incident in interesting:
         written_path = write_incident(incident, examples_dir=EXAMPLES_DIR)
-        print_incident_summary(incident, written_path=written_path)
-        print()
+        if RICH_AVAILABLE:
+            # print_incident_summary_rich() already includes the report
+            # path line itself (see its own "Report" section) -- the
+            # plain-text path below prints it separately since
+            # print_incident_summary() predates Reporter and isn't itself
+            # modified for this.
+            print_incident_summary_rich(incident, written_path=written_path)
+        else:
+            print_incident_summary(incident, written_path=written_path)
+            if "report" in incident.pipeline_stages_run:
+                # write_audit_reports()'s own output location is fully
+                # deterministic (examples/<incident_id>/report/...) --
+                # printed here rather than threading the real return paths
+                # back out of run_guardian()'s loop, which would mean
+                # adding a field to Incident/incident.json just to carry
+                # two paths a caller can already derive from the
+                # incident_id alone.
+                report_dir = EXAMPLES_DIR / incident.incident_id / "report"
+                print(f"Report: {report_dir / 'audit_report.md'}")
+                print(f"        {report_dir / 'audit_report.html'}")
+            print()
 
     return 0
 

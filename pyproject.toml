@@ -14,6 +14,17 @@ dependencies = [
     "python-dotenv==1.2.2",
 ]
 
+# Sprint 3 WP3 (Reporter, decision 0009): `rich` is OPTIONAL, not a core
+# dependency — src/agents/rich_output.py guards its own `import rich` in a
+# try/except and falls back to orchestrator.py's plain-text
+# print_incident_summary()/print_dry_run_summary() when it isn't
+# installed. Listing it as an extra (`pip install -e ".[rich]"`) rather
+# than in [project]'s own `dependencies` is what makes that fallback path
+# real rather than theoretical — a hard dependency would mean the
+# plain-text branch never actually runs for anyone with a normal install.
+[project.optional-dependencies]
+rich = ["rich==13.9.4"]
+
 # lld-sprint2.md §4.3: a real `guardian` command on PATH via
 # `pip install -e .`, not `python -m src.agents.cli run` typed out every
 # time — the standard, idiomatic way Python projects expose a command.

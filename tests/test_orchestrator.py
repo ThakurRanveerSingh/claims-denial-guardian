@@ -429,7 +429,7 @@ class TestRunGuardian:
 
         monkeypatch.setattr(orchestrator, "run_investigator", _fake_run_investigator)
 
-        incidents = run_guardian(conn=object())
+        incidents = run_guardian(conn=object(), generate_reports=False)
 
         assert investigated_segments == [Segment("Zorbex Insurance", "moonflu")]
         by_segment = {inc.sentinel.segment: inc for inc in incidents}
@@ -454,7 +454,7 @@ class TestRunGuardian:
         # forcing it via segment= must still investigate it, and must NOT
         # also investigate the genuinely-flagged Zorbex segment (scoped to
         # exactly the forced one).
-        incidents = run_guardian(conn=object(), segment=("Blarg Health", "sneezies"))
+        incidents = run_guardian(conn=object(), segment=("Blarg Health", "sneezies"), generate_reports=False)
 
         assert investigated_segments == [Segment("Blarg Health", "sneezies")]
         by_segment = {inc.sentinel.segment: inc for inc in incidents}
@@ -485,7 +485,7 @@ class TestRunGuardian:
             ),
         )
 
-        run_guardian(conn=object())
+        run_guardian(conn=object(), generate_reports=False)
 
         assert len(get_backend_calls) == 1  # constructed lazily, once, then reused — not once per segment
 
@@ -501,7 +501,7 @@ class TestRunGuardian:
 
         monkeypatch.setattr(orchestrator, "run_investigator", _fake_run_investigator)
 
-        run_guardian(conn=object(), max_budget_usd=3.5)
+        run_guardian(conn=object(), max_budget_usd=3.5, generate_reports=False)
 
         assert received["max_budget_usd"] == 3.5
 
@@ -535,7 +535,7 @@ class TestRunGuardian:
 
         monkeypatch.setattr(orchestrator, "run_scribe", _fake_run_scribe)
 
-        incidents = run_guardian(conn=object())  # writeback defaults to True
+        incidents = run_guardian(conn=object(), generate_reports=False)  # writeback defaults to True
 
         flagged = [i for i in incidents if i.status == "investigated"][0]
         assert scribe_calls == [flagged.incident_id]
@@ -558,7 +558,7 @@ class TestRunGuardian:
 
         monkeypatch.setattr(orchestrator, "run_scribe", _fail)
 
-        incidents = run_guardian(conn=object(), writeback=False)
+        incidents = run_guardian(conn=object(), writeback=False, generate_reports=False)
 
         flagged = [i for i in incidents if i.status == "investigated"][0]
         assert flagged.scribe is None
@@ -598,7 +598,7 @@ class TestRunGuardian:
 
         monkeypatch.setattr(orchestrator, "run_remediator", _fail)
 
-        incidents = run_guardian(conn=object())  # remediate defaults to False
+        incidents = run_guardian(conn=object(), generate_reports=False)  # remediate defaults to False
 
         flagged = [i for i in incidents if i.status == "investigated"][0]
         assert flagged.remediator is None
@@ -623,7 +623,7 @@ class TestRunGuardian:
 
         monkeypatch.setattr(orchestrator, "run_remediator", _fake_run_remediator)
 
-        incidents = run_guardian(conn=object(), remediate=True)
+        incidents = run_guardian(conn=object(), remediate=True, generate_reports=False)
 
         flagged = [i for i in incidents if i.status == "investigated"][0]
         assert remediate_calls == [flagged.incident_id]
@@ -653,7 +653,7 @@ class TestRunGuardian:
             lambda incident, backend: RemediatorResult(incident_id=incident.incident_id, status="success", pr_url="https://github.com/x/y/pull/2"),
         )
 
-        incidents = run_guardian(conn=object(), writeback=False, remediate=True)
+        incidents = run_guardian(conn=object(), writeback=False, remediate=True, generate_reports=False)
 
         flagged = [i for i in incidents if i.status == "investigated"][0]
         assert flagged.scribe is None
@@ -671,6 +671,64 @@ class TestRunGuardian:
         monkeypatch.setattr(orchestrator, "run_investigator", _fail)
 
         run_guardian(conn=object(), dry_run=True, remediate=True)
+
+    def test_generate_reports_true_calls_write_audit_reports(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
+
+        report_calls = []
+
+        def _fake_write_audit_reports(incident, examples_dir, healthcare_db_path):
+            report_calls.append(incident.incident_id)
+            return tmp_path / "audit_report.md", tmp_path / "audit_report.html"
+
+        monkeypatch.setattr(orchestrator, "write_audit_reports", _fake_write_audit_reports)
+
+        incidents = run_guardian(conn=object())  # generate_reports defaults to True
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert report_calls == [flagged.incident_id]
+        assert flagged.pipeline_stages_run == ["sentinel", "investigator", "scribe", "report"]
+
+    def test_generate_reports_false_never_calls_write_audit_reports(self, monkeypatch):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: [ALL_FAKE_SEGMENTS[0]])
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(
+            orchestrator, "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=100.0
+            ),
+        )
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
+
+        def _fail(*a, **kw):
+            raise AssertionError("write_audit_reports() should never be called when generate_reports=False")
+
+        monkeypatch.setattr(orchestrator, "write_audit_reports", _fail)
+
+        incidents = run_guardian(conn=object(), generate_reports=False)
+
+        flagged = [i for i in incidents if i.status == "investigated"][0]
+        assert "report" not in flagged.pipeline_stages_run
+
+    def test_generate_reports_never_called_with_nothing_investigated(self, monkeypatch):
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
+
+        def _fail(*a, **kw):
+            raise AssertionError("write_audit_reports() should never be called with nothing investigated")
+
+        monkeypatch.setattr(orchestrator, "write_audit_reports", _fail)
+        monkeypatch.setattr(orchestrator, "get_backend", _fail)
+        monkeypatch.setattr(orchestrator, "run_investigator", _fail)
+
+        run_guardian(conn=object(), dry_run=True)  # generate_reports still defaults True
 
 
 # ===========================================================================
@@ -792,6 +850,17 @@ class TestCli:
         assert write_calls == []
 
     def test_investigated_incident_writes_file_and_exits_zero(self, monkeypatch, capsys, tmp_path):
+        """Pins RICH_AVAILABLE=False: this test is about the PLAIN-TEXT
+        fallback's contract (write_incident()'s exact returned path flows
+        through to output verbatim) and must behave identically whether or
+        not `rich` happens to be installed in whatever environment runs
+        this suite -- rich's Panel wraps/truncates long paths at its own
+        fixed width, which would make a real installed-rich environment
+        fail this exact assertion for reasons unrelated to what it's
+        actually testing. See test_investigated_incident_rich_path below
+        for the rich-specific equivalent, with assertions that account for
+        that wrapping."""
+        monkeypatch.setattr(cli, "RICH_AVAILABLE", False)
         incident = _build_incident(
             ALL_FAKE_SEGMENTS[0],
             investigator_finding=_make_investigator_finding(),
@@ -810,6 +879,38 @@ class TestCli:
         out = capsys.readouterr().out
         assert incident.incident_id in out
         assert str(written) in out
+
+    def test_investigated_incident_rich_path(self, monkeypatch, capsys, tmp_path):
+        """The rich-specific equivalent of the test above -- only runs
+        anything meaningful when rich is actually installed (RICH_AVAILABLE
+        reflects the real environment here, not forced either way)."""
+        from agents.rich_output import RICH_AVAILABLE
+
+        if not RICH_AVAILABLE:
+            pytest.skip("rich is an optional extra and isn't installed in this environment")
+
+        incident = _build_incident(
+            ALL_FAKE_SEGMENTS[0],
+            investigator_finding=_make_investigator_finding(),
+            investigator_cost_usd=0.5,
+            investigator_turns_or_calls=5,
+            wall_clock_seconds=10.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        monkeypatch.setattr(cli, "run_guardian", lambda **kw: [incident])
+        written = tmp_path / incident.incident_id / "incident.json"
+        monkeypatch.setattr(cli, "write_incident", lambda inc, examples_dir=None: written)
+
+        exit_code = cli.main(["run"])
+
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert incident.incident_id in out
+        # Not the full path verbatim -- rich's Panel wraps/truncates long
+        # content at its own fixed width, so only the "Written:" label
+        # (always present, never itself long enough to wrap away) is
+        # checked here.
+        assert "Written" in out
 
     def test_value_error_from_run_guardian_exits_two(self, monkeypatch, capsys):
         def _raise(**kw):

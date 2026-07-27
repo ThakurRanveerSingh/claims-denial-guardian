@@ -1,0 +1,39 @@
+# Audit Report — $incident_id
+
+**Status**: $status
+**Severity**: $severity
+**Generated**: $generated_at
+
+## What was detected
+
+$detection_narrative
+
+## What the investigation established
+
+$investigation_narrative
+
+### Evidence
+
+$evidence_table
+
+### Root cause breakdown
+
+$breakdown_table
+
+## Member impact
+
+Denial counts for this segment, by reason code — read live from the database at report-generation time, not from a cached figure:
+
+$member_impact_table
+
+## Actions taken
+
+$actions_taken
+
+## Outstanding items
+
+$outstanding_items
+
+---
+
+Full incident record: $incident_json_url
