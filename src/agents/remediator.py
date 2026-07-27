@@ -280,6 +280,36 @@ def fetch_schema_and_owner(fix_target: FixTarget) -> tuple:
     return asyncio.run(_fetch_schema_and_owner_async(fix_target))
 
 
+async def _fetch_owner_only_async(fix_target: FixTarget) -> Optional[str]:
+    """A cheap subset of _fetch_schema_and_owner_async: ONE entity lookup
+    (fix_target.table_name only, no upstream_tables, no schema_context) --
+    used on the idempotency short-circuit path in run_remediator(), where
+    no generation happens and the full schema fetch would be pure waste,
+    but the PR body's "Operational note" (decision 0008 §7 — a quarantine
+    table without a watcher is a landfill) still needs a real owner, not a
+    silently-dropped None. Found necessary in practice: Sprint 3 WP3's
+    `guardian resume ... --stage remediate` backfill run hit exactly this
+    path for both real canonical demo incidents, and their RemediatorResult
+    came back with owner=None purely because nothing had fetched it --
+    not because DataHub has no ownership on record."""
+    server_params = StdioServerParameters(
+        command="uvx", args=["mcp-server-datahub@latest"],
+        env={**os.environ, "DATAHUB_GMS_URL": DATAHUB_SERVER, "DATAHUB_GMS_TOKEN": DATAHUB_TOKEN or ""},
+    )
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            urn = await _resolve_entity_urn(session, fix_target.table_name)
+            if urn is None:
+                return None
+            details = await _get_entity_details(session, urn)
+            return _first_owner_name(details)
+
+
+def fetch_owner_only(fix_target: FixTarget) -> Optional[str]:
+    return asyncio.run(_fetch_owner_only_async(fix_target))
+
+
 # ---------------------------------------------------------------------------
 # Prompt construction and SQL extraction.
 # ---------------------------------------------------------------------------
@@ -741,9 +771,17 @@ def run_remediator(
     branch_name = _branch_name_for(incident.incident_id)
     existing_pr_url = _existing_pr_url(branch_name)
     if existing_pr_url and not force:
+        # Still worth one cheap, single-entity MCP lookup here (not the
+        # full fetch_schema_and_owner(), which also pulls upstream_tables'
+        # schema for a generation step that's never going to run on this
+        # path) -- the PR body's "Operational note" already told a human
+        # who to route quarantined rows to, and any later reader of THIS
+        # RemediatorResult (e.g. Reporter) deserves the same answer, not a
+        # silently-dropped None just because nothing happened to ask again.
+        owner = fetch_owner_only(fix_target)
         return RemediatorResult(
             incident_id=incident.incident_id, status="success", fix_target=fix_target,
-            pr_url=existing_pr_url, pr_already_existed=True, branch_name=branch_name,
+            pr_url=existing_pr_url, pr_already_existed=True, branch_name=branch_name, owner=owner,
         )
 
     # A PREVIOUS run's _open_pr() may have left the working tree checked

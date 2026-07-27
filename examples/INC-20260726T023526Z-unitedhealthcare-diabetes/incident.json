@@ -165,7 +165,7 @@
     "pr_already_existed": true,
     "pr_updated": false,
     "branch_name": "guardian/fix-inc-20260726t023526z-unitedhealthcare-diabetes",
-    "owner": null,
+    "owner": "claims_ops_team",
     "reason": null
   }
 }

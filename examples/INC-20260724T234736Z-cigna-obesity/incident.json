@@ -164,7 +164,7 @@
     "pr_already_existed": true,
     "pr_updated": false,
     "branch_name": "guardian/fix-inc-20260724t234736z-cigna-obesity",
-    "owner": null,
+    "owner": "clinical_team",
     "reason": null
   }
 }

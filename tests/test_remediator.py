@@ -752,14 +752,20 @@ class TestRunRemediatorOrchestration:
         assert result.status == "no_fix_available"
         assert backend.complete_calls == []
 
-    def test_existing_pr_short_circuits_before_any_llm_or_schema_work(self, monkeypatch):
+    def test_existing_pr_short_circuits_before_any_llm_or_full_schema_fetch(self, monkeypatch):
         """The idempotency check's whole point: a rerun against an incident
-        that already has an open PR must spend NEITHER an LLM call NOR a
-        DataHub read -- checked directly by making both raise if touched."""
+        that already has an open PR must spend NEITHER an LLM call NOR the
+        FULL schema+owner fetch (fetch_schema_and_owner pulls upstream
+        tables' schema too, all wasted on a path where no generation ever
+        happens) -- checked directly by making the full fetch raise if
+        touched. It DOES still do the cheap, single-entity fetch_owner_only
+        (below) -- the PR body already named an owner; a rerun's
+        RemediatorResult deserves the same answer, not a dropped None."""
         def _fail_schema(*a, **kw):
             raise AssertionError("fetch_schema_and_owner must not be called when a PR already exists")
 
         monkeypatch.setattr(remediator, "fetch_schema_and_owner", _fail_schema)
+        monkeypatch.setattr(remediator, "fetch_owner_only", lambda fix_target: "claims_ops_team")
         monkeypatch.setattr(remediator, "_existing_pr_url", lambda branch: "https://github.com/x/y/pull/3")
         incident = _make_incident()
         backend = _ScriptedBackend(complete_responses=[])
@@ -767,6 +773,7 @@ class TestRunRemediatorOrchestration:
         assert result.status == "success"
         assert result.pr_already_existed is True
         assert result.pr_url == "https://github.com/x/y/pull/3"
+        assert result.owner == "claims_ops_team"
         assert backend.complete_calls == []
 
     def test_successful_fix_opens_a_pr(self, monkeypatch, claims_db, data_platform_repo):
