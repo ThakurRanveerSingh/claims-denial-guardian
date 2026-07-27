@@ -42,8 +42,8 @@ from dotenv import load_dotenv
 
 from agents.investigator import EvidenceEntry, InvestigatorFinding, RootCauseBreakdownEntry, run_investigator
 from agents.llm_backend import LLMBackend, LLMBackendError, get_backend
-from agents.remediator import RemediatorResult, run_remediator
-from agents.scribe import ScribeResult, run_scribe
+from agents.remediator import FixTarget, FreshBuildResult, RemediationAttempt, RemediatorResult, ValidationResult, run_remediator
+from agents.scribe import ScribeEntityResult, ScribeResult, run_scribe
 from agents.sentinel import Segment, SentinelFinding, run_sentinel
 
 # Same load_dotenv() convention as every other module in this repo.
@@ -175,15 +175,56 @@ def write_incident(incident: Incident, examples_dir: Path = EXAMPLES_DIR) -> Pat
     return path
 
 
+def _load_scribe_result(data: Optional[dict]) -> Optional[ScribeResult]:
+    if data is None:
+        return None
+    return ScribeResult(
+        incident_id=data["incident_id"],
+        entities=[ScribeEntityResult(**e) for e in data.get("entities", [])],
+        doc_url=data.get("doc_url"),
+    )
+
+
+def _load_remediator_result(data: Optional[dict]) -> Optional[RemediatorResult]:
+    if data is None:
+        return None
+    ft = data.get("fix_target")
+    fix_target = None
+    if ft is not None:
+        # upstream_tables round-trips through JSON as a list -- FixTarget's
+        # real field is a tuple (it's a frozen/hashable dataclass); restore
+        # that rather than leave it silently as a list.
+        fix_target = FixTarget(
+            transform_file=ft["transform_file"], table_name=ft["table_name"],
+            upstream_tables=tuple(ft["upstream_tables"]), check_column=ft["check_column"],
+        )
+    attempts = []
+    for a in data.get("attempts", []):
+        validation = ValidationResult(**a["validation"])
+        fresh_build = FreshBuildResult(**a["fresh_build"]) if a.get("fresh_build") is not None else None
+        attempts.append(RemediationAttempt(attempt_number=a["attempt_number"], sql=a["sql"], validation=validation, fresh_build=fresh_build))
+    return RemediatorResult(
+        incident_id=data["incident_id"], status=data["status"], fix_target=fix_target, attempts=attempts,
+        pr_url=data.get("pr_url"), pr_already_existed=data.get("pr_already_existed", False),
+        pr_updated=data.get("pr_updated", False), branch_name=data.get("branch_name"),
+        owner=data.get("owner"), reason=data.get("reason"),
+    )
+
+
 def load_incident(path: Path) -> Incident:
     """The inverse of `write_incident()` / `Incident.to_dict()` — reconstructs
-    a full `Incident` from a saved `incident.json`. Promoted here from what
-    was, until Sprint 3 WP3, duplicated ad hoc inside `tests/test_scribe.py`'s
-    and `tests/test_remediator.py`'s own live tests and one-off scratch
-    scripts (`run_remediator()`/`run_remediator_force.py`) — this is now the
-    one real place that reconstruction logic lives, and `resume_incident()`
-    below and Sprint 3 WP3's Reporter (`src/agents/reporter.py`) both use it
-    directly instead of re-deriving it again.
+    a full `Incident` from a saved `incident.json`, including `.scribe`/
+    `.remediator` as real dataclass objects (not raw dicts) when the JSON
+    has them. Promoted here from what was, until Sprint 3 WP3, duplicated ad
+    hoc inside `tests/test_scribe.py`'s and `tests/test_remediator.py`'s own
+    live tests and one-off scratch scripts — this is now the one real place
+    that reconstruction logic lives. `resume_incident()` below and Sprint 3
+    WP3's Reporter (`src/agents/reporter.py`) both use it directly instead
+    of re-deriving it again; Reporter specifically needs `.scribe`/
+    `.remediator` as real objects (attribute access, e.g.
+    `result.fix_target.transform_file`), which is why those two are fully
+    reconstructed here rather than left as raw dicts the way an earlier
+    version of this function did.
     """
     data = json.loads(path.read_text())
 
@@ -212,14 +253,8 @@ def load_incident(path: Path) -> Incident:
         incident_id=data["incident_id"], created_at=data["created_at"], status=data["status"],
         pipeline_stages_run=data["pipeline_stages_run"], sentinel=sentinel, investigator=investigator,
         cost=IncidentCost(**data["cost"]),
-        # scribe/remediator are intentionally NOT reconstructed into their
-        # real dataclasses here (ScribeResult/RemediatorResult nest several
-        # other dataclasses each — a full round-trip reconstructor is real
-        # work nothing has needed yet, since no caller reads a resumed
-        # Incident's .scribe/.remediator back as live objects; both stay
-        # None on a loaded Incident even if the JSON has real data there).
-        # `resume_incident()` below never reads them off the loaded object
-        # for this reason — it only ever WRITES a fresh one.
+        scribe=_load_scribe_result(data.get("scribe")),
+        remediator=_load_remediator_result(data.get("remediator")),
     )
 
 

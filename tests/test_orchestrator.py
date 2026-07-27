@@ -40,8 +40,10 @@ from agents.orchestrator import (
     write_incident,
 )
 from agents.investigator import EvidenceEntry, InvestigatorFinding, InvestigatorRunResult, RootCauseBreakdownEntry
-from agents.remediator import RemediatorResult
-from agents.scribe import ScribeResult
+from agents.remediator import FixTarget, RemediationAttempt, RemediatorResult
+from agents.remediator import FreshBuildResult
+from codegen.sql_validation import ValidationResult
+from agents.scribe import ScribeEntityResult, ScribeResult
 from agents.sentinel import METHOD, Segment, SentinelFinding
 import agents.cli as cli
 
@@ -238,6 +240,60 @@ class TestLoadIncident:
         assert loaded.investigator.primary_root_cause == original.investigator.primary_root_cause
         assert loaded.investigator.root_cause_breakdown[0].claim_count == original.investigator.root_cause_breakdown[0].claim_count
         assert loaded.cost.investigator_cost_usd == 0.33
+
+    def test_scribe_and_remediator_round_trip_as_real_objects_not_dicts(self, tmp_path):
+        """Reporter (Sprint 3 WP3) needs attribute access on these, e.g.
+        `incident.remediator.fix_target.transform_file` -- a dict left
+        un-reconstructed would fail that with AttributeError."""
+        sf = _make_sentinel_finding()
+        original = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(), investigator_cost_usd=0.1,
+            investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        original.scribe = ScribeResult(
+            incident_id=original.incident_id,
+            entities=[ScribeEntityResult(entity_name="claims", entity_urn="urn:li:dataset:x", tag_applied=True)],
+            doc_url="https://github.com/x/y/blob/main/z",
+        )
+        original.remediator = RemediatorResult(
+            incident_id=original.incident_id, status="success",
+            fix_target=FixTarget(transform_file="transform/claims.sql", table_name="claims", upstream_tables=("mart_billing", "mart_demographics")),
+            attempts=[
+                RemediationAttempt(
+                    attempt_number=1, sql="SELECT 1;",
+                    validation=ValidationResult(success=True, original_count=10, clean_count=8, quarantine_count=2, violation_count_in_clean=0),
+                    fresh_build=FreshBuildResult(success=True),
+                )
+            ],
+            pr_url="https://github.com/x/y/pull/1", pr_already_existed=False, owner="claims_ops_team",
+        )
+        path = write_incident(original, examples_dir=tmp_path)
+
+        loaded = load_incident(path)
+
+        assert loaded.scribe.doc_url == "https://github.com/x/y/blob/main/z"
+        assert loaded.scribe.entities[0].entity_name == "claims"
+        assert loaded.scribe.entities[0].tag_applied is True
+
+        assert loaded.remediator.pr_url == "https://github.com/x/y/pull/1"
+        assert loaded.remediator.owner == "claims_ops_team"
+        assert loaded.remediator.fix_target.transform_file == "transform/claims.sql"  # attribute access, not dict indexing
+        assert loaded.remediator.fix_target.upstream_tables == ("mart_billing", "mart_demographics")  # restored as a tuple, not left a list
+        assert loaded.remediator.attempts[0].validation.quarantine_count == 2
+        assert loaded.remediator.attempts[0].fresh_build.success is True
+
+    def test_no_scribe_or_remediator_stays_none(self, tmp_path):
+        sf = _make_sentinel_finding()
+        original = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(), investigator_cost_usd=0.1,
+            investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        path = write_incident(original, examples_dir=tmp_path)
+        loaded = load_incident(path)
+        assert loaded.scribe is None
+        assert loaded.remediator is None
 
     def test_no_anomaly_incident_has_none_investigator(self, tmp_path):
         sf = _make_sentinel_finding(flagged=False)
