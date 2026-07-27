@@ -40,7 +40,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from agents.investigator import InvestigatorFinding, run_investigator
+from agents.investigator import EvidenceEntry, InvestigatorFinding, RootCauseBreakdownEntry, run_investigator
 from agents.llm_backend import LLMBackend, LLMBackendError, get_backend
 from agents.remediator import RemediatorResult, run_remediator
 from agents.scribe import ScribeResult, run_scribe
@@ -173,6 +173,104 @@ def write_incident(incident: Incident, examples_dir: Path = EXAMPLES_DIR) -> Pat
     path = incident_dir / "incident.json"
     path.write_text(json.dumps(incident.to_dict(), indent=2, default=str))
     return path
+
+
+def load_incident(path: Path) -> Incident:
+    """The inverse of `write_incident()` / `Incident.to_dict()` — reconstructs
+    a full `Incident` from a saved `incident.json`. Promoted here from what
+    was, until Sprint 3 WP3, duplicated ad hoc inside `tests/test_scribe.py`'s
+    and `tests/test_remediator.py`'s own live tests and one-off scratch
+    scripts (`run_remediator()`/`run_remediator_force.py`) — this is now the
+    one real place that reconstruction logic lives, and `resume_incident()`
+    below and Sprint 3 WP3's Reporter (`src/agents/reporter.py`) both use it
+    directly instead of re-deriving it again.
+    """
+    data = json.loads(path.read_text())
+
+    s = data["sentinel"]
+    sentinel = SentinelFinding(
+        segment=Segment(s["segment"]["insurance_provider"], s["segment"]["medical_condition"]),
+        segment_claim_count=s["segment_claim_count"], segment_denial_count=s["segment_denial_count"],
+        segment_denial_rate=s["segment_denial_rate"], baseline_denial_rate=s["baseline_denial_rate"],
+        z_score=s["z_score"], threshold=s["threshold"], method=s["method"], flagged=s["flagged"], summary=s["summary"],
+    )
+
+    investigator = None
+    if data.get("investigator") is not None:
+        i = data["investigator"]
+        investigator = InvestigatorFinding(
+            primary_root_cause=i["primary_root_cause"],
+            root_cause_breakdown=[RootCauseBreakdownEntry(**e) for e in i["root_cause_breakdown"]],
+            affected_branch=i["affected_branch"], datasets_checked_and_clean=i["datasets_checked_and_clean"],
+            lineage_path_walked=i["lineage_path_walked"],
+            evidence=[EvidenceEntry(**e) for e in i["evidence"]],
+            root_cause_summary=i["root_cause_summary"], confidence=i["confidence"],
+            backend_used=i["backend_used"], turns_used=i["turns_used"],
+        )
+
+    return Incident(
+        incident_id=data["incident_id"], created_at=data["created_at"], status=data["status"],
+        pipeline_stages_run=data["pipeline_stages_run"], sentinel=sentinel, investigator=investigator,
+        cost=IncidentCost(**data["cost"]),
+        # scribe/remediator are intentionally NOT reconstructed into their
+        # real dataclasses here (ScribeResult/RemediatorResult nest several
+        # other dataclasses each — a full round-trip reconstructor is real
+        # work nothing has needed yet, since no caller reads a resumed
+        # Incident's .scribe/.remediator back as live objects; both stay
+        # None on a loaded Incident even if the JSON has real data there).
+        # `resume_incident()` below never reads them off the loaded object
+        # for this reason — it only ever WRITES a fresh one.
+    )
+
+
+def resume_incident(
+    incident_id: str, stage: str, *,
+    examples_dir: Path = EXAMPLES_DIR,
+    backend: Optional[LLMBackend] = None, llm_backend_name: Optional[str] = None,
+    healthcare_db_path: Optional[Path] = None, data_platform_repo_path: Optional[Path] = None,
+) -> Incident:
+    """Resume a previously saved incident from a given pipeline stage
+    onward — WITHOUT re-running Sentinel/Investigator. This is a real,
+    supported operation in its own right, not a one-off patch: Sentinel and
+    Investigator are the expensive, non-deterministic stages (a fresh
+    Investigator run mints a NEW `incident_id`, timestamped to when it ran,
+    and — since Remediator's PR branch name is derived directly from
+    `incident_id` — re-running the full pipeline can never "backfill" an
+    existing incident's later-stage fields; it can only ever produce a
+    sibling incident with its own new PR). `resume_incident()` instead
+    loads the EXACT existing `Incident` (same `incident_id`, same
+    `SentinelFinding`/`InvestigatorFinding` already on record) and runs only
+    the requested downstream stage against it — so `_branch_name_for`
+    resolves to the SAME branch a prior Remediator run already pushed to,
+    and `_existing_pr_url` correctly recognizes an already-open PR instead
+    of treating this as a fresh incident needing a fresh one.
+
+    `stage`: currently only `"remediate"` is implemented — the concrete need
+    this was built for (Sprint 3 WP3: backfilling `incident.json`'s
+    `remediator` field for the two canonical demo incidents from a real
+    `run_remediator()` call, not a throwaway script). Structured so
+    `"writeback"` (re-run Scribe) can be added the same way later, not
+    hardcoded to assume `remediate` is the only possible resume point.
+    """
+    incident = load_incident(examples_dir / incident_id / "incident.json")
+
+    if stage == "remediate":
+        if incident.investigator is None:
+            raise ValueError(f"{incident_id} has no InvestigatorFinding — nothing to remediate")
+        if backend is None:
+            backend = get_backend(llm_backend_name)
+        kwargs = {}
+        if healthcare_db_path is not None:
+            kwargs["healthcare_db_path"] = healthcare_db_path
+        if data_platform_repo_path is not None:
+            kwargs["data_platform_repo_path"] = data_platform_repo_path
+        incident.remediator = run_remediator(incident, backend, **kwargs)
+        if "remediator" not in incident.pipeline_stages_run:
+            incident.pipeline_stages_run = incident.pipeline_stages_run + ["remediator"]
+    else:
+        raise ValueError(f"resume_incident: unsupported stage {stage!r} (only 'remediate' is implemented)")
+
+    return incident
 
 
 # ---------------------------------------------------------------------------

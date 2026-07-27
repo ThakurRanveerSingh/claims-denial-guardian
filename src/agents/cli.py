@@ -14,7 +14,15 @@ import sys
 from typing import Optional
 
 from agents.llm_backend import LLMBackendError
-from agents.orchestrator import EXAMPLES_DIR, Segment, print_dry_run_summary, print_incident_summary, run_guardian, write_incident
+from agents.orchestrator import (
+    EXAMPLES_DIR,
+    Segment,
+    print_dry_run_summary,
+    print_incident_summary,
+    resume_incident,
+    run_guardian,
+    write_incident,
+)
 
 
 def _parse_segment(value: str) -> tuple[str, str]:
@@ -64,6 +72,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Override INVESTIGATOR_MAX_BUDGET_USD (.env) for this run only.",
+    )
+
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="Resume a previously saved incident from a given stage onward, without re-running "
+        "Sentinel/Investigator (which would mint a new incident_id and therefore a new Remediator "
+        "PR instead of updating the existing one).",
+    )
+    resume_parser.add_argument("incident_id", help="An existing examples/<incident_id>/incident.json to resume.")
+    resume_parser.add_argument(
+        "--stage",
+        required=True,
+        choices=["remediate"],
+        help="Which downstream stage to (re-)run against the saved incident.",
+    )
+    resume_parser.add_argument(
+        "--llm-backend",
+        default=None,
+        metavar="claude_code|anthropic|ollama",
+        help="Override LLM_BACKEND (.env) for this run only.",
     )
 
     return parser
@@ -119,12 +147,32 @@ def _run_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resume_command(args: argparse.Namespace) -> int:
+    try:
+        incident = resume_incident(args.incident_id, args.stage, llm_backend_name=args.llm_backend)
+    except (ValueError, FileNotFoundError) as e:
+        # A real usage error (unknown incident_id, unsupported stage, no
+        # InvestigatorFinding to resume from) -- same exit-code convention
+        # as `guardian run`'s own ValueError handling.
+        print(f"guardian resume: {e}", file=sys.stderr)
+        return 2
+    except LLMBackendError as e:
+        print(f"guardian resume: backend unavailable — {e}", file=sys.stderr)
+        return 1
+
+    written_path = write_incident(incident, examples_dir=EXAMPLES_DIR)
+    print_incident_summary(incident, written_path=written_path)
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "run":
         return _run_command(args)
+    if args.command == "resume":
+        return _resume_command(args)
 
     parser.print_help()
     return 1

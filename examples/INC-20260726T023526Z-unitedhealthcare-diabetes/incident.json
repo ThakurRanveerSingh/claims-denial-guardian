@@ -4,7 +4,8 @@
   "status": "investigated",
   "pipeline_stages_run": [
     "sentinel",
-    "investigator"
+    "investigator",
+    "remediator"
   ],
   "sentinel": {
     "segment": {
@@ -145,5 +146,26 @@
     "investigator_turns_or_calls": 22,
     "investigator_cost_usd": 0.7532424000000001,
     "wall_clock_seconds": 162.6075734589831
+  },
+  "scribe": null,
+  "remediator": {
+    "incident_id": "INC-20260726T023526Z-unitedhealthcare-diabetes",
+    "status": "success",
+    "fix_target": {
+      "transform_file": "transform/claims.sql",
+      "table_name": "claims",
+      "upstream_tables": [
+        "mart_billing",
+        "mart_demographics"
+      ],
+      "check_column": "billing_amount"
+    },
+    "attempts": [],
+    "pr_url": "https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/1",
+    "pr_already_existed": true,
+    "pr_updated": false,
+    "branch_name": "guardian/fix-inc-20260726t023526z-unitedhealthcare-diabetes",
+    "owner": null,
+    "reason": null
   }
 }

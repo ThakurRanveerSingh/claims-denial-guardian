@@ -4,7 +4,8 @@
   "status": "investigated",
   "pipeline_stages_run": [
     "sentinel",
-    "investigator"
+    "investigator",
+    "remediator"
   ],
   "sentinel": {
     "segment": {
@@ -145,5 +146,25 @@
     "investigator_turns_or_calls": 22,
     "investigator_cost_usd": 0.8798372999999999,
     "wall_clock_seconds": 148.94840595900314
+  },
+  "scribe": null,
+  "remediator": {
+    "incident_id": "INC-20260724T234736Z-cigna-obesity",
+    "status": "success",
+    "fix_target": {
+      "transform_file": "transform/staging_patients.sql",
+      "table_name": "staging_patients",
+      "upstream_tables": [
+        "raw_patients"
+      ],
+      "check_column": "billing_amount"
+    },
+    "attempts": [],
+    "pr_url": "https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/2",
+    "pr_already_existed": true,
+    "pr_updated": false,
+    "branch_name": "guardian/fix-inc-20260724t234736z-cigna-obesity",
+    "owner": null,
+    "reason": null
   }
 }

@@ -32,8 +32,10 @@ from agents.orchestrator import (
     _make_incident_id,
     _sentinel_finding_to_dict,
     _slugify,
+    load_incident,
     print_dry_run_summary,
     print_incident_summary,
+    resume_incident,
     run_guardian,
     write_incident,
 )
@@ -212,6 +214,117 @@ class TestWriteIncident:
         assert loaded["incident_id"] == incident.incident_id
         assert loaded["status"] == "investigated"
         assert loaded["cost"]["investigator_cost_usd"] == 0.33
+
+
+class TestLoadIncident:
+    def test_round_trips_through_write_incident(self, tmp_path):
+        sf = _make_sentinel_finding()
+        original = _build_incident(
+            sf,
+            investigator_finding=_make_investigator_finding(),
+            investigator_cost_usd=0.33,
+            investigator_turns_or_calls=4,
+            wall_clock_seconds=9.5,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        path = write_incident(original, examples_dir=tmp_path)
+
+        loaded = load_incident(path)
+
+        assert loaded.incident_id == original.incident_id
+        assert loaded.status == original.status
+        assert loaded.sentinel.segment == original.sentinel.segment
+        assert loaded.sentinel.z_score == original.sentinel.z_score
+        assert loaded.investigator.primary_root_cause == original.investigator.primary_root_cause
+        assert loaded.investigator.root_cause_breakdown[0].claim_count == original.investigator.root_cause_breakdown[0].claim_count
+        assert loaded.cost.investigator_cost_usd == 0.33
+
+    def test_no_anomaly_incident_has_none_investigator(self, tmp_path):
+        sf = _make_sentinel_finding(flagged=False)
+        original = _build_incident(
+            sf, investigator_finding=None, investigator_cost_usd=None, investigator_turns_or_calls=None,
+            wall_clock_seconds=0.1, created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        path = write_incident(original, examples_dir=tmp_path)  # write_incident itself doesn't gate on status -- caller's job normally
+
+        loaded = load_incident(path)
+        assert loaded.investigator is None
+
+
+class TestResumeIncident:
+    def _write_saved_incident(self, tmp_path, root_cause="introduced_at:claims"):
+        sf = _make_sentinel_finding()
+        incident = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(root_cause=root_cause),
+            investigator_cost_usd=0.5, investigator_turns_or_calls=5, wall_clock_seconds=10.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        write_incident(incident, examples_dir=tmp_path)
+        return incident.incident_id
+
+    def test_remediate_reuses_the_exact_saved_incident_id(self, monkeypatch, tmp_path):
+        """The entire point of this function: the incident_id passed to
+        run_remediator() must be byte-identical to the one already saved --
+        NOT a freshly minted one -- so _branch_name_for resolves to a
+        branch a prior run may have already pushed to."""
+        incident_id = self._write_saved_incident(tmp_path)
+
+        seen_incident_ids = []
+
+        def _fake_run_remediator(incident, backend, **kw):
+            seen_incident_ids.append(incident.incident_id)
+            return RemediatorResult(incident_id=incident.incident_id, status="success", pr_url="https://github.com/x/y/pull/1", pr_already_existed=True)
+
+        monkeypatch.setattr(orchestrator, "run_remediator", _fake_run_remediator)
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+
+        result = resume_incident(incident_id, "remediate", examples_dir=tmp_path)
+
+        assert seen_incident_ids == [incident_id]
+        assert result.incident_id == incident_id
+        assert result.remediator is not None
+        assert result.remediator.pr_url == "https://github.com/x/y/pull/1"
+        assert "remediator" in result.pipeline_stages_run
+
+    def test_remediate_never_invokes_sentinel_or_investigator(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+
+        def _fail(*a, **kw):
+            raise AssertionError("resume_incident(stage='remediate') must never re-run Sentinel/Investigator")
+
+        monkeypatch.setattr(orchestrator, "run_sentinel", _fail)
+        monkeypatch.setattr(orchestrator, "run_investigator", _fail)
+        monkeypatch.setattr(orchestrator, "run_remediator", lambda incident, backend, **kw: RemediatorResult(incident_id=incident.incident_id, status="success"))
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+
+        resume_incident(incident_id, "remediate", examples_dir=tmp_path)  # must not raise
+
+    def test_unsupported_stage_raises(self, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+        with pytest.raises(ValueError, match="unsupported stage"):
+            resume_incident(incident_id, "writeback", examples_dir=tmp_path)
+
+    def test_no_investigator_finding_raises(self, monkeypatch, tmp_path):
+        sf = _make_sentinel_finding(flagged=False)
+        incident = _build_incident(
+            sf, investigator_finding=None, investigator_cost_usd=None, investigator_turns_or_calls=None,
+            wall_clock_seconds=0.1, created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        write_incident(incident, examples_dir=tmp_path)
+
+        with pytest.raises(ValueError, match="nothing to remediate"):
+            resume_incident(incident.incident_id, "remediate", examples_dir=tmp_path)
+
+    def test_backend_passed_through_is_used_directly_no_get_backend_call(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+
+        def _fail(*a, **kw):
+            raise AssertionError("get_backend() should not be called when a backend is passed explicitly")
+
+        monkeypatch.setattr(orchestrator, "get_backend", _fail)
+        monkeypatch.setattr(orchestrator, "run_remediator", lambda incident, backend, **kw: RemediatorResult(incident_id=incident.incident_id, status="success"))
+
+        resume_incident(incident_id, "remediate", examples_dir=tmp_path, backend=object())
 
 
 # ===========================================================================
@@ -702,6 +815,44 @@ class TestCli:
         monkeypatch.setattr(cli, "run_guardian", lambda **kw: received.update(kw) or [])
         cli.main(["run", "--dry-run"])
         assert received["remediate"] is False
+
+    def test_resume_command_calls_resume_incident_and_writes_the_file(self, monkeypatch, capsys):
+        sf = _make_sentinel_finding()
+        incident = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(), investigator_cost_usd=0.1,
+            investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        received = {}
+
+        def _fake_resume_incident(incident_id, stage, llm_backend_name=None):
+            received["incident_id"] = incident_id
+            received["stage"] = stage
+            return incident
+
+        monkeypatch.setattr(cli, "resume_incident", _fake_resume_incident)
+        written = {}
+        monkeypatch.setattr(cli, "write_incident", lambda inc, examples_dir: written.setdefault("path", f"{examples_dir}/{inc.incident_id}/incident.json") or f"{examples_dir}/{inc.incident_id}/incident.json")
+
+        exit_code = cli.main(["resume", incident.incident_id, "--stage", "remediate"])
+
+        assert exit_code == 0
+        assert received["incident_id"] == incident.incident_id
+        assert received["stage"] == "remediate"
+        assert "path" in written
+
+    def test_resume_command_unsupported_stage_rejected_by_argparse(self):
+        with pytest.raises(SystemExit):
+            cli.main(["resume", "INC-1", "--stage", "not-a-real-stage"])
+
+    def test_resume_command_value_error_exits_two(self, monkeypatch, capsys):
+        def _raise(*a, **kw):
+            raise ValueError("INC-does-not-exist has no InvestigatorFinding")
+
+        monkeypatch.setattr(cli, "resume_incident", _raise)
+        exit_code = cli.main(["resume", "INC-does-not-exist", "--stage", "remediate"])
+        assert exit_code == 2
+        assert "guardian resume" in capsys.readouterr().err
 
 
 # ===========================================================================
