@@ -14,11 +14,13 @@ import sys
 from typing import Optional
 
 from agents.drift import run_drift_check, run_drift_writeback
+from agents.fhir_export import run_fhir_export, run_fhir_writeback
 from agents.llm_backend import LLMBackendError
 from agents.orchestrator import (
     EXAMPLES_DIR,
     Segment,
     attach_drift_finding,
+    load_incident,
     print_dry_run_summary,
     print_incident_summary,
     resume_incident,
@@ -111,6 +113,21 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="INCIDENT_ID",
         help="Also attach this finding to an existing examples/<incident_id>/incident.json and "
         "regenerate its audit report with a Model Health Check section.",
+    )
+
+    export_fhir_parser = subparsers.add_parser(
+        "export-fhir",
+        help="Generate sample FHIR R4 ExplanationOfBenefit resources for a saved incident's segment "
+        "(Sprint 3 WP5, CMS-0057-F compliance-linkage demo) and register the export as a DataHub "
+        "dataset with lineage back to raw_patients. Structural demo only — see docs/decisions/0012.",
+    )
+    export_fhir_parser.add_argument("incident_id", help="An existing examples/<incident_id>/incident.json.")
+    export_fhir_parser.add_argument(
+        "--limit",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Max number of sample denied claims to export as EOB resources (default: 3).",
     )
 
     return parser
@@ -244,6 +261,40 @@ def _check_drift_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_fhir_command(args: argparse.Namespace) -> int:
+    incident_path = EXAMPLES_DIR / args.incident_id / "incident.json"
+    if not incident_path.exists():
+        print(f"guardian export-fhir: no incident.json found for {args.incident_id!r}", file=sys.stderr)
+        return 2
+
+    incident = load_incident(incident_path)
+    try:
+        export_result = run_fhir_export(incident, limit=args.limit)
+    except ValueError as e:
+        print(f"guardian export-fhir: {e}", file=sys.stderr)
+        return 2
+
+    print(f"Guardian FHIR export — {incident.incident_id}")
+    if export_result.note:
+        print(f"  {export_result.note}")
+        return 0
+
+    print(f"  sampled {len(export_result.samples)} claim(s) with denial_reason_code={export_result.denial_reason_code_sampled}")
+    for sample in export_result.samples:
+        print(f"  wrote {sample.resource_path}")
+    print()
+
+    writeback = run_fhir_writeback(incident, export_result)
+    if writeback.skipped_reason:
+        print(f"Writeback note: {writeback.skipped_reason}")
+    print(f"DataHub ({writeback.entity_urn}):")
+    tag = "tag already present" if writeback.tag_already_present else "tag applied" if writeback.tag_applied else "tag not applied"
+    doc = "doc note already present" if writeback.doc_note_already_present else "doc note added" if writeback.doc_note_added else "doc note not added"
+    print(f"  {tag}, {doc}")
+    print(f"  lineage upstream: {writeback.upstream_resolved or 'not resolved'}")
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -254,6 +305,8 @@ def main(argv: Optional[list] = None) -> int:
         return _resume_command(args)
     if args.command == "check-drift":
         return _check_drift_command(args)
+    if args.command == "export-fhir":
+        return _export_fhir_command(args)
 
     parser.print_help()
     return 1
