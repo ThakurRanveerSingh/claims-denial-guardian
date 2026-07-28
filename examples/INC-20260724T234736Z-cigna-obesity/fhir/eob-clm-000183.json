@@ -1,0 +1,121 @@
+{
+  "resourceType": "ExplanationOfBenefit",
+  "id": "clm-000183",
+  "meta": {
+    "tag": [
+      {
+        "system": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#tags",
+        "code": "guardian-flagged",
+        "display": "Built on data currently under active Guardian quality investigation"
+      }
+    ]
+  },
+  "extension": [
+    {
+      "url": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#guardian-data-quality-flag",
+      "extension": [
+        {
+          "url": "incidentId",
+          "valueString": "INC-20260724T234736Z-cigna-obesity"
+        },
+        {
+          "url": "classification",
+          "valueString": "inherited_from:raw_patients"
+        },
+        {
+          "url": "confidence",
+          "valueString": "high"
+        },
+        {
+          "url": "evidence",
+          "valueUrl": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260724T234736Z-cigna-obesity/incident.json"
+        }
+      ]
+    }
+  ],
+  "identifier": [
+    {
+      "system": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#claim-id",
+      "value": "CLM-000183"
+    }
+  ],
+  "status": "active",
+  "type": {
+    "extension": [
+      {
+        "url": "http://hl7.org/fhir/StructureDefinition/data-absent-reason",
+        "valueCode": "unsupported"
+      }
+    ]
+  },
+  "use": "claim",
+  "patient": {
+    "display": "tanya SOto"
+  },
+  "created": "2023-08-02",
+  "insurer": {
+    "display": "Cigna"
+  },
+  "provider": {
+    "display": "Stokes Chambers and Martin,"
+  },
+  "outcome": "complete",
+  "disposition": "Denied \u2014 INVALID_BILLING_AMOUNT (see extension for Guardian root-cause linkage)",
+  "billablePeriod": {
+    "start": "2023-07-31",
+    "end": "2023-08-02"
+  },
+  "diagnosis": [
+    {
+      "sequence": 1,
+      "diagnosisCodeableConcept": {
+        "text": "obesity"
+      }
+    }
+  ],
+  "insurance": [
+    {
+      "focal": true,
+      "coverage": {
+        "display": "Cigna"
+      }
+    }
+  ],
+  "item": [
+    {
+      "sequence": 1,
+      "productOrService": {
+        "text": "Lipitor"
+      },
+      "net": {
+        "value": -11311.327347997592,
+        "currency": "USD"
+      },
+      "adjudication": [
+        {
+          "category": {
+            "text": "denial-reason"
+          },
+          "reason": {
+            "text": "INVALID_BILLING_AMOUNT"
+          },
+          "amount": {
+            "value": -11311.327347997592,
+            "currency": "USD"
+          }
+        }
+      ]
+    }
+  ],
+  "total": [
+    {
+      "category": {
+        "text": "submitted"
+      },
+      "amount": {
+        "value": -11311.327347997592,
+        "currency": "USD"
+      }
+    }
+  ]
+}

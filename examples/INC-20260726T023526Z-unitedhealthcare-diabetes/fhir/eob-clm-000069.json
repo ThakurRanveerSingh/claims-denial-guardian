@@ -1,0 +1,121 @@
+{
+  "resourceType": "ExplanationOfBenefit",
+  "id": "clm-000069",
+  "meta": {
+    "tag": [
+      {
+        "system": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#tags",
+        "code": "guardian-flagged",
+        "display": "Built on data currently under active Guardian quality investigation"
+      }
+    ]
+  },
+  "extension": [
+    {
+      "url": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#guardian-data-quality-flag",
+      "extension": [
+        {
+          "url": "incidentId",
+          "valueString": "INC-20260726T023526Z-unitedhealthcare-diabetes"
+        },
+        {
+          "url": "classification",
+          "valueString": "introduced_at:claims"
+        },
+        {
+          "url": "confidence",
+          "valueString": "high"
+        },
+        {
+          "url": "evidence",
+          "valueUrl": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260726T023526Z-unitedhealthcare-diabetes/incident.json"
+        }
+      ]
+    }
+  ],
+  "identifier": [
+    {
+      "system": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#claim-id",
+      "value": "CLM-000069"
+    }
+  ],
+  "status": "active",
+  "type": {
+    "extension": [
+      {
+        "url": "http://hl7.org/fhir/StructureDefinition/data-absent-reason",
+        "valueCode": "unsupported"
+      }
+    ]
+  },
+  "use": "claim",
+  "patient": {
+    "display": "MicHAEl MillEr"
+  },
+  "created": "2024-02-10",
+  "insurer": {
+    "display": "UnitedHealthcare"
+  },
+  "provider": {
+    "display": "Clark Brown, and Myers"
+  },
+  "outcome": "complete",
+  "disposition": "Denied \u2014 INVALID_BILLING_AMOUNT (see extension for Guardian root-cause linkage)",
+  "billablePeriod": {
+    "start": "2024-02-06",
+    "end": "2024-02-10"
+  },
+  "diagnosis": [
+    {
+      "sequence": 1,
+      "diagnosisCodeableConcept": {
+        "text": "diabetes"
+      }
+    }
+  ],
+  "insurance": [
+    {
+      "focal": true,
+      "coverage": {
+        "display": "UnitedHealthcare"
+      }
+    }
+  ],
+  "item": [
+    {
+      "sequence": 1,
+      "productOrService": {
+        "text": "Penicillin"
+      },
+      "net": {
+        "value": -35776.81511145377,
+        "currency": "USD"
+      },
+      "adjudication": [
+        {
+          "category": {
+            "text": "denial-reason"
+          },
+          "reason": {
+            "text": "INVALID_BILLING_AMOUNT"
+          },
+          "amount": {
+            "value": -35776.81511145377,
+            "currency": "USD"
+          }
+        }
+      ]
+    }
+  ],
+  "total": [
+    {
+      "category": {
+        "text": "submitted"
+      },
+      "amount": {
+        "value": -35776.81511145377,
+        "currency": "USD"
+      }
+    }
+  ]
+}

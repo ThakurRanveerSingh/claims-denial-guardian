@@ -1,0 +1,121 @@
+{
+  "resourceType": "ExplanationOfBenefit",
+  "id": "clm-000103",
+  "meta": {
+    "tag": [
+      {
+        "system": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#tags",
+        "code": "guardian-flagged",
+        "display": "Built on data currently under active Guardian quality investigation"
+      }
+    ]
+  },
+  "extension": [
+    {
+      "url": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#guardian-data-quality-flag",
+      "extension": [
+        {
+          "url": "incidentId",
+          "valueString": "INC-20260726T023526Z-unitedhealthcare-diabetes"
+        },
+        {
+          "url": "classification",
+          "valueString": "introduced_at:claims"
+        },
+        {
+          "url": "confidence",
+          "valueString": "high"
+        },
+        {
+          "url": "evidence",
+          "valueUrl": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/examples/INC-20260726T023526Z-unitedhealthcare-diabetes/incident.json"
+        }
+      ]
+    }
+  ],
+  "identifier": [
+    {
+      "system": "https://github.com/ThakurRanveerSingh/claims-denial-guardian/blob/main/docs/decisions/0012-fhir-compliance-bridge.md#claim-id",
+      "value": "CLM-000103"
+    }
+  ],
+  "status": "active",
+  "type": {
+    "extension": [
+      {
+        "url": "http://hl7.org/fhir/StructureDefinition/data-absent-reason",
+        "valueCode": "unsupported"
+      }
+    ]
+  },
+  "use": "claim",
+  "patient": {
+    "display": "wilLIAm morTON"
+  },
+  "created": "2023-07-11",
+  "insurer": {
+    "display": "UnitedHealthcare"
+  },
+  "provider": {
+    "display": "Thompson-Walker"
+  },
+  "outcome": "complete",
+  "disposition": "Denied \u2014 INVALID_BILLING_AMOUNT (see extension for Guardian root-cause linkage)",
+  "billablePeriod": {
+    "start": "2023-06-25",
+    "end": "2023-07-11"
+  },
+  "diagnosis": [
+    {
+      "sequence": 1,
+      "diagnosisCodeableConcept": {
+        "text": "diabetes"
+      }
+    }
+  ],
+  "insurance": [
+    {
+      "focal": true,
+      "coverage": {
+        "display": "UnitedHealthcare"
+      }
+    }
+  ],
+  "item": [
+    {
+      "sequence": 1,
+      "productOrService": {
+        "text": "Ibuprofen"
+      },
+      "net": {
+        "value": -3125.7364766012533,
+        "currency": "USD"
+      },
+      "adjudication": [
+        {
+          "category": {
+            "text": "denial-reason"
+          },
+          "reason": {
+            "text": "INVALID_BILLING_AMOUNT"
+          },
+          "amount": {
+            "value": -3125.7364766012533,
+            "currency": "USD"
+          }
+        }
+      ]
+    }
+  ],
+  "total": [
+    {
+      "category": {
+        "text": "submitted"
+      },
+      "amount": {
+        "value": -3125.7364766012533,
+        "currency": "USD"
+      }
+    }
+  ]
+}
