@@ -135,7 +135,17 @@ All issues are planted in `raw_patients` and propagate through the pipeline unch
 
 **The selective halting challenge:** Negative billing affects `mart_billing` but NOT `mart_demographics`. Invalid ages affect `mart_demographics` but NOT `mart_billing`. A naive circuit breaker halts everything. A smart one halts only the affected downstream.
 
-All issues use `random.seed(42)` for reproducibility.
+**Correction (Sprint 3 WP4, checked directly against this file's own code
+rather than assumed from this comment):** `create_db.py` calls
+`random.seed(42)`, but `plant_quality_issues()` selects which rows get
+each issue via SQLite's own `ORDER BY RANDOM() LIMIT n` — a separate C-level
+PRNG that Python's `random.seed()` has no effect on. Confirmed empirically:
+identical `random.seed(42)` calls immediately before two `ORDER BY RANDOM()`
+queries against the same table produce different row selections both times.
+Planted-issue placement is **not actually reproducible** across runs of
+`create_db.py`. See `docs/decisions/0010-regeneration-non-determinism.md`
+for the full finding and why it means the committed `healthcare.db` — not
+a regenerated one — is this project's canonical dataset.
 
 ---
 
@@ -190,9 +200,25 @@ Click `mart_billing` → Lineage tab in DataHub to see the full chain.
 
 ---
 
-## Generate from Scratch
+## Generate from Scratch — don't, for this project
+
+**Use the committed `healthcare.db`. Do not regenerate it.** Every
+artifact in this repo — every incident, PR, audit report, and z-score
+committed under `examples/` — was computed against the specific database
+already checked into this repo. Regenerating from raw CSVs would silently
+produce a *different* database (see the correction above:
+`plant_quality_issues()`'s row selection isn't actually reproducible run
+to run), invalidating all of them without any error to warn you. This is
+documented as `docs/decisions/0010-regeneration-non-determinism.md`.
+
+The steps below are kept for historical/provenance reference only — this
+is how `healthcare.db` was originally built, before Sprint 1 copied it
+into this repo (decision 0002) and built claims/denials/scoring on top of
+it (decisions 0006/0008 layer further, still-committed state on top).
+They are **not** a setup step for this project.
 
 ```bash
+# Historical reference only -- do not run this to "set up" the project.
 # Download from: https://kaggle.com/datasets/prasad22/healthcare-dataset
 # Extract the ZIP, then:
 
@@ -245,7 +271,8 @@ This was a known issue with earlier versions of the metadata script. The current
 ## All Available Commands
 
 ```bash
-# ── Database generation ──
+# ── Database generation (historical reference only -- see "Generate from
+#    Scratch" above; use the committed healthcare.db, don't run this) ──
 python create_db.py /path/to/csvs         # Creates healthcare.db
 
 # ── Ingestion ──

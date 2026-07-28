@@ -32,6 +32,7 @@ from agents.orchestrator import (
     _make_incident_id,
     _sentinel_finding_to_dict,
     _slugify,
+    attach_drift_finding,
     load_incident,
     print_dry_run_summary,
     print_incident_summary,
@@ -39,6 +40,7 @@ from agents.orchestrator import (
     run_guardian,
     write_incident,
 )
+from agents.drift import DriftFinding, FeatureHealthCheck
 from agents.investigator import EvidenceEntry, InvestigatorFinding, InvestigatorRunResult, RootCauseBreakdownEntry
 from agents.remediator import FixTarget, RemediationAttempt, RemediatorResult
 from agents.remediator import FreshBuildResult
@@ -295,6 +297,46 @@ class TestLoadIncident:
         assert loaded.scribe is None
         assert loaded.remediator is None
 
+    def test_drift_round_trips_as_a_real_object_not_a_dict(self, tmp_path):
+        """Same reasoning as scribe/remediator's own round-trip test above
+        -- reporter.py needs attribute access (e.g. `c.plain_summary`)."""
+        sf = _make_sentinel_finding()
+        original = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(), investigator_cost_usd=0.1,
+            investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        original.drift = DriftFinding(
+            check_id="drift-20260101T000000Z", model_version="toy-denial-risk-v1",
+            checked_at="2026-01-01T00:00:00+00:00",
+            feature_checks=[
+                FeatureHealthCheck(
+                    feature_name="segment_denial_rate", check_type="range_invariant",
+                    documented_expected="[0.0, 1.0]", metric_value=0.0, status="pass",
+                    plain_summary="fabricated",
+                )
+            ],
+            overall_status="pass",
+        )
+        path = write_incident(original, examples_dir=tmp_path)
+
+        loaded = load_incident(path)
+
+        assert loaded.drift.check_id == "drift-20260101T000000Z"
+        assert loaded.drift.feature_checks[0].feature_name == "segment_denial_rate"  # attribute access, not dict indexing
+        assert loaded.drift.overall_status == "pass"
+
+    def test_no_drift_stays_none(self, tmp_path):
+        sf = _make_sentinel_finding()
+        original = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(), investigator_cost_usd=0.1,
+            investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        path = write_incident(original, examples_dir=tmp_path)
+        loaded = load_incident(path)
+        assert loaded.drift is None
+
     def test_no_anomaly_incident_has_none_investigator(self, tmp_path):
         sf = _make_sentinel_finding(flagged=False)
         original = _build_incident(
@@ -430,6 +472,76 @@ class TestResumeIncident:
         monkeypatch.setattr(orchestrator, "run_remediator", lambda incident, backend, **kw: RemediatorResult(incident_id=incident.incident_id, status="success"))
 
         resume_incident(incident_id, "remediate", examples_dir=tmp_path, backend=object())
+
+
+class TestAttachDriftFinding:
+    """Sprint 3 WP4: `guardian check-drift --incident <id>` -- attaches an
+    already-computed DriftFinding to a saved incident, re-saves it, and
+    regenerates its report. Same "composes with load_incident()/
+    write_incident() rather than inventing a second reload mechanism"
+    reasoning resume_incident() above already established."""
+
+    def _write_saved_incident(self, tmp_path):
+        sf = _make_sentinel_finding()
+        incident = _build_incident(
+            sf, investigator_finding=_make_investigator_finding(),
+            investigator_cost_usd=0.5, investigator_turns_or_calls=5, wall_clock_seconds=10.0,
+            created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        write_incident(incident, examples_dir=tmp_path)
+        return incident.incident_id
+
+    def _make_finding(self):
+        return DriftFinding(
+            check_id="drift-20260101T000000Z", model_version="toy-denial-risk-v1",
+            checked_at="2026-01-01T00:00:00+00:00", feature_checks=[], overall_status="pass",
+        )
+
+    def test_attaches_finding_and_updates_pipeline_stages_run(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+        monkeypatch.setattr(orchestrator, "write_audit_reports", lambda incident, examples_dir, healthcare_db_path: None)
+
+        finding = self._make_finding()
+        result = attach_drift_finding(incident_id, finding, examples_dir=tmp_path)
+
+        assert result.incident_id == incident_id
+        assert result.drift is finding
+        assert "drift" in result.pipeline_stages_run
+
+    def test_re_saves_incident_json_with_drift_field(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+        monkeypatch.setattr(orchestrator, "write_audit_reports", lambda incident, examples_dir, healthcare_db_path: None)
+
+        attach_drift_finding(incident_id, self._make_finding(), examples_dir=tmp_path)
+
+        reloaded = load_incident(tmp_path / incident_id / "incident.json")
+        assert reloaded.drift is not None
+        assert reloaded.drift.check_id == "drift-20260101T000000Z"
+
+    def test_regenerates_the_audit_report(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+        calls = []
+        monkeypatch.setattr(
+            orchestrator, "write_audit_reports",
+            lambda incident, examples_dir, healthcare_db_path: calls.append(incident.incident_id),
+        )
+
+        attach_drift_finding(incident_id, self._make_finding(), examples_dir=tmp_path)
+
+        assert calls == [incident_id]
+
+    def test_never_invokes_sentinel_investigator_or_remediator(self, monkeypatch, tmp_path):
+        incident_id = self._write_saved_incident(tmp_path)
+        monkeypatch.setattr(orchestrator, "write_audit_reports", lambda incident, examples_dir, healthcare_db_path: None)
+
+        def _fail(*a, **kw):
+            raise AssertionError("attach_drift_finding must never re-run Sentinel/Investigator/Remediator")
+
+        monkeypatch.setattr(orchestrator, "run_sentinel", _fail)
+        monkeypatch.setattr(orchestrator, "run_investigator", _fail)
+        monkeypatch.setattr(orchestrator, "run_remediator", _fail)
+
+        attach_drift_finding(incident_id, self._make_finding(), examples_dir=tmp_path)  # must not raise
 
 
 # ===========================================================================
@@ -1072,6 +1184,93 @@ class TestCli:
         exit_code = cli.main(["resume", "INC-does-not-exist", "--stage", "remediate"])
         assert exit_code == 2
         assert "guardian resume" in capsys.readouterr().err
+
+    def _make_drift_finding(self):
+        return DriftFinding(
+            check_id="drift-20260101T000000Z", model_version="toy-denial-risk-v1",
+            checked_at="2026-01-01T00:00:00+00:00",
+            feature_checks=[
+                FeatureHealthCheck(
+                    feature_name="segment_denial_rate", check_type="range_invariant",
+                    documented_expected="[0.0, 1.0]", metric_value=0.0, status="pass", plain_summary="fabricated",
+                )
+            ],
+            overall_status="pass",
+        )
+
+    def test_check_drift_command_runs_check_and_writeback(self, monkeypatch, capsys):
+        from agents.drift import DriftWritebackResult
+
+        finding = self._make_drift_finding()
+        monkeypatch.setattr(cli, "run_drift_check", lambda: finding)
+        monkeypatch.setattr(cli, "run_drift_writeback", lambda f: DriftWritebackResult(check_id=f.check_id, entity_urn="urn:li:mlModel:x", tag_applied=True, doc_note_added=True))
+
+        exit_code = cli.main(["check-drift"])
+
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "drift-20260101T000000Z" in out
+        assert "segment_denial_rate" in out
+
+    def test_check_drift_command_without_incident_never_calls_attach(self, monkeypatch):
+        from agents.drift import DriftWritebackResult
+
+        finding = self._make_drift_finding()
+        monkeypatch.setattr(cli, "run_drift_check", lambda: finding)
+        monkeypatch.setattr(cli, "run_drift_writeback", lambda f: DriftWritebackResult(check_id=f.check_id, entity_urn="urn:li:mlModel:x"))
+
+        def _fail(*a, **kw):
+            raise AssertionError("attach_drift_finding should not be called without --incident")
+
+        monkeypatch.setattr(cli, "attach_drift_finding", _fail)
+
+        exit_code = cli.main(["check-drift"])
+        assert exit_code == 0
+
+    def test_check_drift_command_with_incident_attaches_and_reports(self, monkeypatch, capsys):
+        from agents.drift import DriftWritebackResult
+
+        finding = self._make_drift_finding()
+        monkeypatch.setattr(cli, "run_drift_check", lambda: finding)
+        monkeypatch.setattr(cli, "run_drift_writeback", lambda f: DriftWritebackResult(check_id=f.check_id, entity_urn="urn:li:mlModel:x"))
+
+        received = {}
+
+        def _fake_attach(incident_id, f):
+            received["incident_id"] = incident_id
+            received["finding"] = f
+            fake_incident = _build_incident(
+                _make_sentinel_finding(), investigator_finding=_make_investigator_finding(),
+                investigator_cost_usd=0.1, investigator_turns_or_calls=1, wall_clock_seconds=1.0,
+                created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            )
+            fake_incident.incident_id = incident_id
+            return fake_incident
+
+        monkeypatch.setattr(cli, "attach_drift_finding", _fake_attach)
+
+        exit_code = cli.main(["check-drift", "--incident", "INC-existing"])
+
+        assert exit_code == 0
+        assert received["incident_id"] == "INC-existing"
+        assert received["finding"] is finding
+        assert "INC-existing" in capsys.readouterr().out
+
+    def test_check_drift_command_incident_not_found_exits_two(self, monkeypatch, capsys):
+        from agents.drift import DriftWritebackResult
+
+        finding = self._make_drift_finding()
+        monkeypatch.setattr(cli, "run_drift_check", lambda: finding)
+        monkeypatch.setattr(cli, "run_drift_writeback", lambda f: DriftWritebackResult(check_id=f.check_id, entity_urn="urn:li:mlModel:x"))
+
+        def _raise(*a, **kw):
+            raise FileNotFoundError("examples/INC-does-not-exist/incident.json")
+
+        monkeypatch.setattr(cli, "attach_drift_finding", _raise)
+
+        exit_code = cli.main(["check-drift", "--incident", "INC-does-not-exist"])
+        assert exit_code == 2
+        assert "guardian check-drift" in capsys.readouterr().err
 
 
 # ===========================================================================

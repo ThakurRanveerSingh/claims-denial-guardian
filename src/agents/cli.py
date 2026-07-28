@@ -13,10 +13,12 @@ import argparse
 import sys
 from typing import Optional
 
+from agents.drift import run_drift_check, run_drift_writeback
 from agents.llm_backend import LLMBackendError
 from agents.orchestrator import (
     EXAMPLES_DIR,
     Segment,
+    attach_drift_finding,
     print_dry_run_summary,
     print_incident_summary,
     resume_incident,
@@ -93,6 +95,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="claude_code|anthropic|ollama",
         help="Override LLM_BACKEND (.env) for this run only.",
+    )
+
+    drift_parser = subparsers.add_parser(
+        "check-drift",
+        help="Run a single, on-demand feature-health check against denial_risk_model (US-6). "
+        "Separate from `guardian run` -- no scheduling, no alerting (LLD §4). "
+        "Zero LLM, single snapshot: internal-consistency checks against documented expected "
+        "ranges, not a comparison against historical data (docs/decisions/0010).",
+    )
+    drift_parser.add_argument(
+        "--incident",
+        dest="incident_id",
+        default=None,
+        metavar="INCIDENT_ID",
+        help="Also attach this finding to an existing examples/<incident_id>/incident.json and "
+        "regenerate its audit report with a Model Health Check section.",
     )
 
     return parser
@@ -188,6 +206,44 @@ def _resume_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_drift_command(args: argparse.Namespace) -> int:
+    finding = run_drift_check()
+
+    print(f"Guardian drift check — {finding.check_id}")
+    print(f"  model_version: {finding.model_version}")
+    for c in finding.feature_checks:
+        print(f"  {c.feature_name} ({c.check_type}): {c.status} — expected {c.documented_expected}")
+    print(f"Overall: {finding.overall_status}")
+    print()
+
+    writeback = run_drift_writeback(finding)
+    if writeback.skipped_reason:
+        print(f"Writeback skipped: {writeback.skipped_reason}")
+    else:
+        print(f"Writeback ({writeback.entity_urn}):")
+        tag = "tag already present" if writeback.tag_already_present else "tag applied" if writeback.tag_applied else "tag not applied"
+        doc = "doc note already present" if writeback.doc_note_already_present else "doc note added" if writeback.doc_note_added else "doc note not added"
+        print(f"  {tag}, {doc}")
+        for ar in writeback.feature_assertions:
+            assertion = "assertion already defined" if ar.assertion_already_defined else "assertion defined"
+            run_event = "run event emitted" if ar.assertion_run_event_emitted else "run event: not emitted"
+            print(f"  {ar.feature_name}: {assertion}, {run_event}")
+    print()
+
+    if args.incident_id:
+        try:
+            incident = attach_drift_finding(args.incident_id, finding)
+        except FileNotFoundError as e:
+            print(f"guardian check-drift: {e}", file=sys.stderr)
+            return 2
+        report_dir = EXAMPLES_DIR / incident.incident_id / "report"
+        print(f"Attached to {incident.incident_id} — report regenerated:")
+        print(f"  {report_dir / 'audit_report.md'}")
+        print(f"  {report_dir / 'audit_report.html'}")
+
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -196,6 +252,8 @@ def main(argv: Optional[list] = None) -> int:
         return _run_command(args)
     if args.command == "resume":
         return _resume_command(args)
+    if args.command == "check-drift":
+        return _check_drift_command(args)
 
     parser.print_help()
     return 1

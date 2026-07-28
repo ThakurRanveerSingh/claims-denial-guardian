@@ -37,6 +37,7 @@ from agents.reporter import (
     severity_for,
     write_audit_reports,
 )
+from agents.drift import DriftFinding, FeatureHealthCheck
 from agents.scribe import ScribeEntityResult, ScribeResult
 from agents.sentinel import METHOD, Segment, SentinelFinding
 
@@ -177,6 +178,47 @@ def real_incident(request):
     return load_incident(path)
 
 
+@pytest.fixture(params=REAL_INCIDENT_IDS)
+def real_incident_with_drift(request):
+    """Sprint 3 WP4: a real saved incident with a fabricated (not live)
+    DriftFinding attached -- exercises the Model Health Check section's
+    content/leak-safety without a live MCP call in the regular suite. One
+    check deliberately flagged so both "Passed"/"Flagged" wording paths
+    are exercised, not just the all-pass case both real incidents
+    currently have."""
+    if not REAL_DB_PATH.exists():
+        pytest.skip("real healthcare.db not present in this environment")
+    path = EXAMPLES_DIR / request.param / "incident.json"
+    if not path.exists():
+        pytest.skip(f"real saved incident {request.param} not present")
+    incident = load_incident(path)
+    incident.drift = DriftFinding(
+        check_id="drift-20260101T000000Z", model_version="toy-denial-risk-v1",
+        checked_at="2026-01-01T00:00:00+00:00",
+        feature_checks=[
+            FeatureHealthCheck(
+                feature_name="segment_denial_rate", check_type="range_invariant",
+                documented_expected="[0.0, 1.0]", metric_value=0.0, status="pass",
+                plain_summary="segment_denial_rate stayed within its valid range for every scored claim.",
+            ),
+            FeatureHealthCheck(
+                feature_name="billing_zscore", check_type="cap_exceedance",
+                documented_expected="|z| <= 4.0 (BILLING_ZSCORE_CAP, score_claims.py)", metric_value=0.4,
+                status="pass",
+                plain_summary="0.40% of scored claims have a billing_zscore beyond the model's own documented boundary.",
+            ),
+            FeatureHealthCheck(
+                feature_name="billing_zscore", check_type="shape_vs_theoretical",
+                documented_expected="PSI < 0.10 vs. theoretical standard normal", metric_value=0.38,
+                status="flagged",
+                plain_summary="billing_zscore's observed shape diverged from the theoretical standard normal by more than the healthy threshold.",
+            ),
+        ],
+        overall_status="1 check(s) flagged",
+    )
+    return incident
+
+
 class TestGoldenFileDeterminism:
     def test_md_is_byte_identical_across_two_generations_once_generated_at_is_normalized(self, real_incident):
         first = generate_audit_report_md(real_incident, healthcare_db_path=REAL_DB_PATH)
@@ -315,6 +357,62 @@ class TestGoldenFileContentSanity:
         md = generate_audit_report_md(real_incident, healthcare_db_path=REAL_DB_PATH)
         if real_incident.remediator is not None and real_incident.remediator.owner:
             assert real_incident.remediator.owner in md
+
+
+# ===========================================================================
+# 3a. Model Health Check section (Sprint 3 WP4) -- same leak-safety
+#     discipline decision 0009 §4 already established, extended here
+#     rather than re-litigated: drift.FeatureHealthCheck.documented_expected
+#     carries a file reference ("score_claims.py") by design (it's meant
+#     for the Technical Appendix, not the main narrative), so this is
+#     checked explicitly rather than assumed safe by association with the
+#     already-sanitized plain_summary strings.
+# ===========================================================================
+
+
+class TestModelHealthSection:
+    def test_no_drift_finding_says_so_plainly(self, real_incident):
+        assert real_incident.drift is None  # both real incidents predate WP4
+        md = generate_audit_report_md(real_incident, healthcare_db_path=REAL_DB_PATH)
+        html_out = generate_audit_report_html(real_incident, healthcare_db_path=REAL_DB_PATH)
+        assert "No feature-health check has been run" in md
+        assert "No feature-health check has been run" in html_out
+
+    def test_with_drift_finding_shows_feature_names_and_verdicts(self, real_incident_with_drift):
+        md = generate_audit_report_md(real_incident_with_drift, healthcare_db_path=REAL_DB_PATH)
+        html_out = generate_audit_report_html(real_incident_with_drift, healthcare_db_path=REAL_DB_PATH)
+        for text in (md, html_out):
+            assert "segment_denial_rate" in text
+            assert "billing_zscore" in text
+            assert "Passed" in text
+            assert "Flagged" in text
+
+    def test_documented_expected_and_check_id_appear_only_in_appendix_not_main_body(self, real_incident_with_drift):
+        """drift.py's `documented_expected` field deliberately carries a
+        code reference ("BILLING_ZSCORE_CAP, score_claims.py") -- that's
+        fine in the Technical Appendix, not in the compliance-facing
+        Model Health Check section above it. Same split-on-appendix-marker
+        method the existing leak test already uses."""
+        md = generate_audit_report_md(real_incident_with_drift, healthcare_db_path=REAL_DB_PATH)
+        html_out = generate_audit_report_html(real_incident_with_drift, healthcare_db_path=REAL_DB_PATH)
+
+        narrative_md = md.split("## Technical Appendix")[0]
+        narrative_html = html_out.split('<h2>Technical Appendix</h2>')[0]
+
+        assert "score_claims.py" not in narrative_md
+        assert "score_claims.py" not in narrative_html
+        assert real_incident_with_drift.drift.check_id not in narrative_md
+        assert real_incident_with_drift.drift.check_id not in narrative_html
+
+        # Moved, not deleted -- the appendix must still have the full
+        # technical detail.
+        assert "score_claims.py" in md
+        assert real_incident_with_drift.drift.check_id in md
+
+    def test_plain_summaries_appear_verbatim_in_main_body(self, real_incident_with_drift):
+        md = generate_audit_report_md(real_incident_with_drift, healthcare_db_path=REAL_DB_PATH)
+        for c in real_incident_with_drift.drift.feature_checks:
+            assert c.plain_summary in md
 
 
 # ===========================================================================

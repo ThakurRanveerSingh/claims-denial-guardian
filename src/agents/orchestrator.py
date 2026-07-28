@@ -40,6 +40,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from agents.drift import DriftFinding, FeatureHealthCheck
 from agents.investigator import EvidenceEntry, InvestigatorFinding, RootCauseBreakdownEntry, run_investigator
 from agents.llm_backend import LLMBackend, LLMBackendError, get_backend
 from agents.remediator import FixTarget, FreshBuildResult, RemediationAttempt, RemediatorResult, ValidationResult, run_remediator
@@ -105,6 +106,15 @@ class Incident:
     # side effect, off by default (decision 0008), same principle as
     # --no-writeback for Scribe's DataHub writes.
     remediator: Optional[RemediatorResult] = None
+    # Sprint 3 WP4: NOT incident-specific like scribe/remediator above —
+    # a DriftFinding is a model-level feature-health check, computed by
+    # `guardian check-drift` independently of any one investigation, then
+    # optionally attached to a saved incident (`--incident <id>`,
+    # `orchestrator.attach_drift_finding()`) so its audit report can carry
+    # a Model Health Check section. None whenever no check has been
+    # attached to this incident — same "None means genuinely didn't
+    # happen" convention as scribe/remediator.
+    drift: Optional[DriftFinding] = None
 
     def to_dict(self) -> dict:
         """JSON-serializable form for examples/<incident-id>/incident.json.
@@ -137,6 +147,9 @@ class Incident:
             # ValidationResult are all plain dataclasses, no NamedTuple
             # fields anywhere in the chain.
             "remediator": asdict(self.remediator) if self.remediator is not None else None,
+            # DriftFinding/FeatureHealthCheck are also plain dataclasses —
+            # same no-NamedTuple-gotcha reasoning as scribe/remediator.
+            "drift": asdict(self.drift) if self.drift is not None else None,
         }
 
 
@@ -212,6 +225,16 @@ def _load_remediator_result(data: Optional[dict]) -> Optional[RemediatorResult]:
     )
 
 
+def _load_drift_finding(data: Optional[dict]) -> Optional[DriftFinding]:
+    if data is None:
+        return None
+    return DriftFinding(
+        check_id=data["check_id"], model_version=data["model_version"], checked_at=data["checked_at"],
+        feature_checks=[FeatureHealthCheck(**c) for c in data.get("feature_checks", [])],
+        overall_status=data.get("overall_status", "pass"),
+    )
+
+
 def load_incident(path: Path) -> Incident:
     """The inverse of `write_incident()` / `Incident.to_dict()` — reconstructs
     a full `Incident` from a saved `incident.json`, including `.scribe`/
@@ -256,7 +279,40 @@ def load_incident(path: Path) -> Incident:
         cost=IncidentCost(**data["cost"]),
         scribe=_load_scribe_result(data.get("scribe")),
         remediator=_load_remediator_result(data.get("remediator")),
+        drift=_load_drift_finding(data.get("drift")),
     )
+
+
+def attach_drift_finding(
+    incident_id: str, finding: DriftFinding, *,
+    examples_dir: Path = EXAMPLES_DIR,
+    healthcare_db_path: Optional[Path] = None,
+) -> Incident:
+    """Attaches an already-computed `DriftFinding` (from
+    `drift.run_drift_check()`) to a previously saved incident, re-saves
+    `incident.json`, and regenerates that incident's audit report so its
+    Model Health Check section reflects the attached finding. This is what
+    `guardian check-drift --incident <id>` (LLD §3.5) uses — composes with
+    `load_incident()`/`write_incident()` the same way `resume_incident()`
+    does above, rather than inventing a second reload mechanism for what's
+    the same underlying operation (attach a downstream result to an
+    existing incident record).
+
+    Deliberately NOT folded into `resume_incident()`'s `stage=` dispatch:
+    that function's two existing stages both consume
+    `incident.investigator` to do their work (Remediator/Scribe act on a
+    specific investigation's findings); a drift check is model-level, not
+    incident-specific — it doesn't read anything from `incident` at all,
+    it's attached to one purely so the report can show it alongside a
+    real investigation.
+    """
+    incident = load_incident(examples_dir / incident_id / "incident.json")
+    incident.drift = finding
+    if "drift" not in incident.pipeline_stages_run:
+        incident.pipeline_stages_run = incident.pipeline_stages_run + ["drift"]
+    write_incident(incident, examples_dir=examples_dir)
+    write_audit_reports(incident, examples_dir=examples_dir, healthcare_db_path=healthcare_db_path or Path(DB_PATH))
+    return incident
 
 
 def resume_incident(
@@ -616,6 +672,14 @@ def print_incident_summary(incident: Incident, written_path: Optional[Path] = No
                 print(f"  Fix target: {rem.fix_target.transform_file}")
             if rem.owner:
                 print(f"  Suggested owner: {rem.owner}")
+        print()
+
+    if incident.drift is not None:
+        print("Drift (feature health check):")
+        d = incident.drift
+        print(f"  Check: {d.check_id}  |  model_version: {d.model_version}  |  {d.overall_status}")
+        for c in d.feature_checks:
+            print(f"  {c.feature_name} ({c.check_type}): {c.status} — expected {c.documented_expected}")
         print()
 
     cost = incident.cost

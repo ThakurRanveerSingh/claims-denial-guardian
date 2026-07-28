@@ -323,6 +323,85 @@ def _actions_taken_lines(incident) -> list:
     return lines
 
 
+_CHECK_TYPE_LABELS = {
+    "range_invariant": "a data-integrity range check",
+    "cap_exceedance": "a check against the model's own documented boundary",
+    "shape_vs_theoretical": "a shape comparison against the theoretical expected distribution",
+    "unimplemented": "an unimplemented check",
+}
+
+
+def _plain_check_type(check_type: str) -> str:
+    """Same translate-the-coded-tag discipline as _plain_classification()
+    (Part C UAT amendment, decision 0009 §4) — a compliance reader sees
+    "a shape comparison...", never the snake_case identifier
+    "shape_vs_theoretical" a Python dict key uses internally."""
+    return _CHECK_TYPE_LABELS.get(check_type, check_type.replace("_", " "))
+
+
+def _model_health_intro(drift_finding) -> str:
+    """Plain prose only (same discipline as _detection_narrative/
+    _investigation_narrative) — `drift.FeatureHealthCheck.plain_summary`
+    strings are themselves already written compliance-reader-safe (no
+    function names or file paths), same authorial discipline applied at
+    the source this time rather than translated here. `None` means no
+    check has been attached to this incident yet (Sprint 3 WP4's
+    `guardian check-drift --incident <id>` is what attaches one — this is
+    independent of the base Sentinel/Investigator/Scribe/Remediator
+    pipeline, not a stage that runs automatically for every incident)."""
+    if drift_finding is None:
+        return (
+            "No feature-health check has been run alongside this incident. This check evaluates "
+            "the denial-risk model's input features, independent of this specific incident, and can "
+            "be run separately at any time."
+        )
+    verdict = "all checks passed" if drift_finding.overall_status == "pass" else drift_finding.overall_status
+    return (
+        f"A feature-health check was run against the denial-risk scoring model (model version "
+        f"{drift_finding.model_version}). Overall result: {verdict}. This is a single-snapshot check "
+        f"of whether the model's input data still satisfies its own documented mathematical "
+        f"properties — not a comparison against historical data, since this project's dataset has "
+        f"no genuine earlier snapshot to compare against."
+    )
+
+
+def _model_health_table_md(drift_finding) -> str:
+    if drift_finding is None or not drift_finding.feature_checks:
+        return ""
+    rows = [
+        (
+            _escape_md_cell(c.feature_name),
+            _escape_md_cell(_plain_check_type(c.check_type)),
+            "Passed" if c.status == "pass" else "Flagged",
+            _escape_md_cell(c.plain_summary),
+        )
+        for c in drift_finding.feature_checks
+    ]
+    return _md_table(["Feature", "Check", "Result", "Summary"], rows)
+
+
+def _model_health_section_md(drift_finding) -> str:
+    intro = _model_health_intro(drift_finding)
+    table = _model_health_table_md(drift_finding)
+    return f"{intro}\n\n{table}" if table else intro
+
+
+def _model_health_table_html(drift_finding) -> str:
+    if drift_finding is None or not drift_finding.feature_checks:
+        return ""
+    rows = [
+        (c.feature_name, _plain_check_type(c.check_type), "Passed" if c.status == "pass" else "Flagged", c.plain_summary)
+        for c in drift_finding.feature_checks
+    ]
+    return _html_table(["Feature", "Check", "Result", "Summary"], rows)
+
+
+def _model_health_section_html(drift_finding) -> str:
+    intro = f"<p>{html.escape(_model_health_intro(drift_finding))}</p>"
+    table = _model_health_table_html(drift_finding)
+    return intro + table
+
+
 def _outstanding_items_text(incident) -> str:
     if incident.remediator is None or incident.remediator.status != "success":
         return "No fix has been generated yet — outstanding items will be determined once Remediator runs."
@@ -388,14 +467,35 @@ def _member_impact_table_md(rows: list) -> str:
     return _md_table(["Denial reason", "Claims"], [(_escape_md_cell(r.category), str(r.claim_count)) for r in rows])
 
 
-def _technical_appendix_md(finding) -> str:
+def _drift_technical_table_md(drift_finding) -> str:
+    if drift_finding is None or not drift_finding.feature_checks:
+        return ""
+    rows = [
+        (
+            _escape_md_cell(c.feature_name), _escape_md_cell(c.check_type),
+            _escape_md_cell(c.documented_expected), f"{c.metric_value:.4f}", c.status,
+        )
+        for c in drift_finding.feature_checks
+    ]
+    table = _md_table(["Feature", "Check type", "Documented expected", "Metric value", "Status"], rows)
+    return (
+        f"\n\n**Feature-health check** ({_escape_md_cell(drift_finding.check_id)}, "
+        f"{drift_finding.checked_at}): model_version {drift_finding.model_version}, "
+        f"written back to denial_risk_model in DataHub.\n\n{table}"
+    )
+
+
+def _technical_appendix_md(finding, drift_finding=None) -> str:
     """Everything a compliance reader does NOT need: the raw lineage
-    trace (tool-call syntax) and the full evidence log (literal SQL, MCP
-    tool names). Kept verbatim, per the repo owner's explicit instruction
-    — reproducibility matters, it just doesn't belong in the sections a
-    non-technical reviewer reads first (Part C UAT amendment)."""
+    trace (tool-call syntax), the full evidence log (literal SQL, MCP
+    tool names), and — Sprint 3 WP4 — the drift check's raw metric
+    values/thresholds (e.g. "score_claims.py" references, PSI numbers).
+    Kept verbatim, per the repo owner's explicit instruction —
+    reproducibility matters, it just doesn't belong in the sections a
+    non-technical reviewer reads first (Part C UAT amendment, same
+    discipline extended here rather than re-litigated)."""
     if finding is None:
-        return "_(no investigation was performed)_"
+        return "_(no investigation was performed)_" + _drift_technical_table_md(drift_finding)
     lineage = " -> ".join(finding.lineage_path_walked) if finding.lineage_path_walked else "(none recorded)"
     return (
         "This section is the raw technical trace Investigator used to reach its conclusion — "
@@ -406,6 +506,7 @@ def _technical_appendix_md(finding) -> str:
         f"**Raw lineage trace**: {_escape_md_cell(lineage)}\n\n"
         "**Evidence log**:\n\n"
         f"{_evidence_table_md(finding)}"
+        f"{_drift_technical_table_md(drift_finding)}"
     )
 
 
@@ -439,9 +540,10 @@ def generate_audit_report_md(incident, *, healthcare_db_path: Path = DB_PATH, ge
         investigation_narrative=_investigation_narrative(incident.investigator),
         breakdown_table=_breakdown_table_md(incident.investigator),
         member_impact_table=_member_impact_table_md(member_impact),
+        model_health_section=_model_health_section_md(incident.drift),
         actions_taken=actions_taken,
         outstanding_items=_outstanding_items_text(incident),
-        technical_appendix=_technical_appendix_md(incident.investigator),
+        technical_appendix=_technical_appendix_md(incident.investigator, incident.drift),
         incident_json_url=_incident_github_url(incident.incident_id),
     )
 
@@ -486,11 +588,28 @@ def _member_impact_table_html(rows: list) -> str:
     return _html_table(["Denial reason", "Claims"], [(r.category, r.claim_count) for r in rows])
 
 
-def _technical_appendix_html(finding) -> str:
+def _drift_technical_table_html(drift_finding) -> str:
+    if drift_finding is None or not drift_finding.feature_checks:
+        return ""
+    rows = [
+        (c.feature_name, c.check_type, c.documented_expected, f"{c.metric_value:.4f}", c.status)
+        for c in drift_finding.feature_checks
+    ]
+    table = _html_table(["Feature", "Check type", "Documented expected", "Metric value", "Status"], rows)
+    return (
+        f"<p><strong>Feature-health check</strong> ({html.escape(drift_finding.check_id)}, "
+        f"{html.escape(drift_finding.checked_at)}): model_version {html.escape(drift_finding.model_version)}, "
+        f"written back to denial_risk_model in DataHub.</p>{table}"
+    )
+
+
+def _technical_appendix_html(finding, drift_finding=None) -> str:
     """HTML equivalent of _technical_appendix_md() — same content, same
-    "compliance readers don't need this" framing (Part C UAT amendment)."""
+    "compliance readers don't need this" framing (Part C UAT amendment),
+    now also carrying the drift check's raw metric table when present
+    (Sprint 3 WP4)."""
     if finding is None:
-        return "<p><em>No investigation was performed.</em></p>"
+        return "<p><em>No investigation was performed.</em></p>" + _drift_technical_table_html(drift_finding)
     lineage = " &rarr; ".join(html.escape(step) for step in finding.lineage_path_walked) if finding.lineage_path_walked else "(none recorded)"
     return (
         "<p>This section is the raw technical trace Investigator used to reach its conclusion — "
@@ -501,6 +620,7 @@ def _technical_appendix_html(finding) -> str:
         f"<p><strong>Raw lineage trace</strong>: {lineage}</p>"
         "<p><strong>Evidence log</strong>:</p>"
         f"{_evidence_table_html(finding)}"
+        f"{_drift_technical_table_html(drift_finding)}"
     )
 
 
@@ -611,9 +731,10 @@ def generate_audit_report_html(incident, *, healthcare_db_path: Path = DB_PATH, 
         lineage_diagram_html=_lineage_diagram_html(incident.investigator),
         breakdown_table_html=_breakdown_table_html(incident.investigator),
         member_impact_table_html=_member_impact_table_html(member_impact),
+        model_health_section_html=_model_health_section_html(incident.drift),
         actions_taken_html=_actions_taken_html(incident),
         outstanding_items_html=html.escape(_outstanding_items_text(incident)),
-        technical_appendix_html=_technical_appendix_html(incident.investigator),
+        technical_appendix_html=_technical_appendix_html(incident.investigator, incident.drift),
         incident_json_url=_incident_github_url(incident.incident_id),
     )
 
