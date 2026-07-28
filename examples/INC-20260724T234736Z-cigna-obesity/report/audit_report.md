@@ -2,7 +2,7 @@
 
 **Status**: investigated
 **Severity**: Critical
-**Generated**: 2026-07-27T04:23:31.179836+00:00
+**Generated**: 2026-07-28T00:12:14.118173+00:00
 
 ## What was detected
 
@@ -33,6 +33,16 @@ Denial counts for this segment, by reason code — read live from the database a
 | INVALID_BILLING_AMOUNT | 280 |
 | HIGH_RISK_SCORE | 11 |
 | RANDOM_AUDIT | 7 |
+
+## Model health check
+
+A feature-health check was run against the denial-risk scoring model (model version toy-denial-risk-v1). Overall result: all checks passed. This is a single-snapshot check of whether the model's input data still satisfies its own documented mathematical properties — not a comparison against historical data, since this project's dataset has no genuine earlier snapshot to compare against.
+
+| Feature | Check | Result | Summary |
+|---|---|---|---|
+| segment_denial_rate | a data-integrity range check | Passed | segment_denial_rate stayed within its mathematically valid 0-100% range for every scored claim (observed range: 2.3% to 20.8%). This is a data-integrity check, not a distributional comparison — it always passes when the underlying calculation is working correctly, and would only fail if that calculation itself were broken. |
+| billing_zscore | a check against the model's own documented boundary | Passed | 224 of 55500 scored claims (0.40%) have a billing_zscore beyond the model's own documented boundary of 4.0. Reported for visibility only — this version does not flag against any threshold here, to avoid treating an invented number as a meaningful cutoff. |
+| billing_zscore | a shape comparison against the theoretical expected distribution | Passed | billing_zscore's observed shape has a Population Stability Index of 0.0384 against the theoretical standard normal distribution it's mathematically supposed to approximate — within the healthy range under the standard PSI convention (under 0.10 means no significant shift). This compares shape against a mathematical reference, not against a past snapshot of this data — no such historical snapshot genuinely exists for this project's dataset. |
 
 ## Actions taken
 
@@ -75,6 +85,14 @@ This section is the raw technical trace Investigator used to reach its conclusio
 | 4c. Test reproduction at staging_patients | bash/sqlite3 | LEFT JOIN staging_patients sp ON sp.rowid = c.source_billing_rowid; count CAST(sp.billing_amount AS REAL)<0 | 280/280 negative in staging_patients, 0 missing joins -- still reproduces 100%. |
 | 4d. Verify staging_patients.rowid aligns with raw_patients.rowid before trusting next hop | bash/sqlite3 | JOIN raw_patients rp ON rp.rowid=sp.rowid; compare dates and numeric billing_amount | 55500/55500 rows align -- rowid join to raw_patients is valid. |
 | 4e. Test reproduction at raw_patients (final available hop) | bash/sqlite3 | LEFT JOIN raw_patients rp ON rp.rowid = c.source_billing_rowid; count CAST(rp.billing_amount AS REAL)<0 | 280/280 negative in raw_patients, 0 missing joins -- reproduces 100% all the way to the pipeline root. |
+
+**Feature-health check** (drift-20260728T001207Z, 2026-07-28T00:12:07.313702+00:00): model_version toy-denial-risk-v1, written back to denial_risk_model in DataHub.
+
+| Feature | Check type | Documented expected | Metric value | Status |
+|---|---|---|---|---|
+| segment_denial_rate | range_invariant | [0.0, 1.0] | 0.0000 | pass |
+| billing_zscore | cap_exceedance | \|z\| <= 4.0 (BILLING_ZSCORE_CAP, score_claims.py) | 0.4036 | pass |
+| billing_zscore | shape_vs_theoretical | PSI < 0.1 vs. theoretical standard normal (published PSI convention) | 0.0384 | pass |
 
 ---
 

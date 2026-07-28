@@ -89,6 +89,27 @@ ML_PLATFORM = "urn:li:dataPlatform:python"
 FEATURE_TABLE_URN = str(MlFeatureTableUrn(platform=ML_PLATFORM, name="denial_risk_features"))
 MODEL_URN = str(MlModelUrn(platform=ML_PLATFORM, name="denial_risk_model", env="PROD"))
 
+# The real dataset holding the feature VALUES being checked — resolved live
+# via MCP search at writeback time (_resolve_dataset_urn), same "never
+# hardcode schemas" discipline scribe.py's own _resolve_entity_urn follows;
+# only the bare table name is a constant.
+SCORES_TABLE_NAME = "denial_model_scores"
+
+# Column names in denial_model_scores (schema_sprint1.sql) — NOT the same
+# strings as the DataHub mlFeature names ("segment_denial_rate",
+# "billing_zscore"). Live-verified this session (a real 422 from DataHub):
+# a CUSTOM assertion's `entity` must be a dataset URN, not an MLModel URN,
+# and its `field` must be a real schemaField URN, not a bare feature name
+# — so assertions target denial_model_scores' own columns, the same
+# DatasetAssertionInfo-adjacent pattern scribe.py's billing-amount
+# assertion already uses, not the MLModel entity directly (which still
+# gets the tag/doc-note writeback — no dataset-only constraint applies
+# there).
+FEATURE_COLUMN_NAMES = {
+    "segment_denial_rate": "segment_denial_rate_feature",
+    "billing_zscore": "billing_zscore_feature",
+}
+
 MODEL_VERSION = "toy-denial-risk-v1"  # score_claims.py's MODEL_VERSION
 BILLING_ZSCORE_CAP = 4.0  # score_claims.py's BILLING_ZSCORE_CAP
 
@@ -342,6 +363,18 @@ async def _fetch_feature_names(session: ClientSession) -> list:
     return names
 
 
+async def _resolve_dataset_urn(session: ClientSession, table_name: str) -> Optional[str]:
+    """Search-based discovery, same pattern scribe.py's own
+    `_resolve_entity_urn` already uses (never construct a dataset URN
+    directly from a naming convention — verify it's real and live)."""
+    data = await _call_mcp_tool(session, "search", {"query": f"/q {table_name}", "filter": "entity_type = dataset", "num_results": 20})
+    for result in data.get("searchResults", []):
+        entity = result.get("entity", {})
+        if entity.get("properties", {}).get("name") == table_name:
+            return entity.get("urn")
+    return None
+
+
 async def _assertion_already_exists(session: ClientSession, assertion_urn: str) -> bool:
     """Identical logic to scribe.py's own `_assertion_already_exists` —
     duplicated per this codebase's "small per-module boilerplate, copied
@@ -454,13 +487,25 @@ def _append_drift_doc_note(emitter: DatahubRestEmitter, entity_urn: str, existin
     return True
 
 
-def _ensure_drift_assertion_defined(emitter: DatahubRestEmitter, assertion_urn: str, model_urn: str, feature_name: str, documented_expected: str) -> None:
+def _ensure_drift_assertion_defined(
+    emitter: DatahubRestEmitter, assertion_urn: str, dataset_urn: str, field_urn: str, feature_name: str, documented_expected: str,
+) -> None:
+    """Targets `denial_model_scores` (a real dataset), not `denial_risk_model`
+    (the MLModel) — live-verified this session (a real 422 from DataHub,
+    not assumed): `CustomAssertionInfo.entity` must be a dataset-typed
+    URN ("Required: [dataset]"), and `.field` must be a real schemaField
+    URN, not a bare feature name ("Failed to retrieve entity with urn
+    segment_denial_rate, invalid urn"). `denial_model_scores` is the
+    actual dataset holding the feature values these checks read — the
+    same `DATASET_COLUMN`-scoped pattern scribe.py's own billing-amount
+    assertion already uses, just via CUSTOM (no built-in operator
+    expresses a PSI/cap-exceedance style statistic)."""
     info = AssertionInfoClass(
         type="CUSTOM",
         customAssertion=CustomAssertionInfoClass(
             type="FEATURE_HEALTH_CHECK",
-            entity=model_urn,
-            field=feature_name,
+            entity=dataset_urn,
+            field=field_urn,
         ),
         source=AssertionSourceClass(type="INFERRED"),
         description=(
@@ -473,18 +518,20 @@ def _ensure_drift_assertion_defined(emitter: DatahubRestEmitter, assertion_urn: 
 
 
 def _emit_drift_assertion_run_event(
-    emitter: DatahubRestEmitter, assertion_urn: str, model_urn: str, check_id: str, checked_at: str, flagged_count: int,
+    emitter: DatahubRestEmitter, assertion_urn: str, dataset_urn: str, check_id: str, checked_at: str, flagged_count: int,
 ) -> None:
     """Same (assertionUrn, timestampMillis, runId) dedup mechanic Scribe's
     own assertion run events already rely on (decision 0007, empirically
     verified there) — runId=check_id, timestampMillis derived from the
-    check's own checked_at, both deterministic."""
+    check's own checked_at, both deterministic. `asserteeUrn` is the
+    dataset (denial_model_scores), matching `_ensure_drift_assertion_
+    defined`'s entity — not the MLModel."""
     dt = datetime.fromisoformat(checked_at)
     timestamp_millis = int(dt.timestamp() * 1000)
     run_event = AssertionRunEventClass(
         timestampMillis=timestamp_millis,
         runId=check_id,
-        asserteeUrn=model_urn,
+        asserteeUrn=dataset_urn,
         status="COMPLETE",
         assertionUrn=assertion_urn,
         result=AssertionResultClass(
@@ -606,23 +653,40 @@ async def _run_drift_writeback_async(finding: DriftFinding) -> DriftWritebackRes
 
             # --- 3. Assertions, one per feature (not per individual check --
             # LLD §3.3: cap-exceedance + shape checks on billing_zscore
-            # share one assertion) ---
+            # share one assertion). Target denial_model_scores (a real
+            # dataset), resolved live — see _ensure_drift_assertion_
+            # defined's docstring for why this can't target MODEL_URN.
+            scores_dataset_urn = await _resolve_dataset_urn(session, SCORES_TABLE_NAME)
+
             for feature_name in _unique_feature_names(finding):
                 assertion_urn = _assertion_urn_for_feature(feature_name)
                 feature_checks = [c for c in finding.feature_checks if c.feature_name == feature_name]
                 ar = FeatureAssertionResult(feature_name=feature_name, assertion_urn=assertion_urn)
 
+                if scores_dataset_urn is None:
+                    ar.assertion_run_event_emitted = False
+                    result.feature_assertions.append(ar)
+                    continue
+
+                column_name = FEATURE_COLUMN_NAMES.get(feature_name, feature_name)
+                field_urn = f"urn:li:schemaField:({scores_dataset_urn},{column_name})"
+
                 if await _assertion_already_exists(session, assertion_urn):
                     ar.assertion_already_defined = True
                 else:
                     documented = "; ".join(c.documented_expected for c in feature_checks)
-                    _ensure_drift_assertion_defined(emitter, assertion_urn, MODEL_URN, feature_name, documented)
+                    _ensure_drift_assertion_defined(emitter, assertion_urn, scores_dataset_urn, field_urn, feature_name, documented)
                     ar.assertion_defined = True
 
                 flagged_count = sum(1 for c in feature_checks if c.status == "flagged")
-                _emit_drift_assertion_run_event(emitter, assertion_urn, MODEL_URN, finding.check_id, finding.checked_at, flagged_count)
+                _emit_drift_assertion_run_event(emitter, assertion_urn, scores_dataset_urn, finding.check_id, finding.checked_at, flagged_count)
                 ar.assertion_run_event_emitted = True
                 result.feature_assertions.append(ar)
+
+            if scores_dataset_urn is None:
+                result.skipped_reason = (
+                    result.skipped_reason or f"{SCORES_TABLE_NAME} dataset not found in DataHub — assertions skipped (tag/doc note still applied)"
+                )
 
     return result
 

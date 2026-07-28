@@ -230,8 +230,13 @@ class TestWriteHelpers:
 
     def test_ensure_drift_assertion_defined_description_mentions_feature(self):
         emitter = _FakeEmitter()
-        _ensure_drift_assertion_defined(emitter, "urn:li:assertion:x", "urn:li:mlModel:x", "billing_zscore", "[0,1]")
+        _ensure_drift_assertion_defined(
+            emitter, "urn:li:assertion:x", "urn:li:dataset:x", "urn:li:schemaField:(urn:li:dataset:x,billing_zscore_feature)",
+            "billing_zscore", "[0,1]",
+        )
         assert "billing_zscore" in emitter.emitted[0].aspect.description
+        assert emitter.emitted[0].aspect.customAssertion.entity == "urn:li:dataset:x"  # dataset, not the MLModel
+        assert emitter.emitted[0].aspect.customAssertion.field == "urn:li:schemaField:(urn:li:dataset:x,billing_zscore_feature)"
 
     def test_build_drift_doc_description_has_check_id_prefix_and_verdicts(self):
         finding = _make_finding([_make_check(status="pass"), _make_check(feature_name="billing_zscore", status="flagged")])
@@ -282,8 +287,9 @@ class _ScriptedMcpSession:
     """Same shape as test_scribe.py's own _ScriptedMcpSession -- dispatches
     on (tool_name, urn) to canned responses."""
 
-    def __init__(self, entity_responses: dict):
+    def __init__(self, entity_responses: dict, search_responses: dict = None):
         self.entity_responses = entity_responses  # {urn: response dict}
+        self.search_responses = search_responses or {}  # {table_name: urn or None}
         self.calls: list = []
 
     async def __aenter__(self):
@@ -300,6 +306,11 @@ class _ScriptedMcpSession:
         if name == "get_entities":
             urn = arguments["urns"]
             payload = self.entity_responses.get(urn, {"urn": urn})
+        elif name == "search":
+            query = arguments["query"]
+            table_name = query.split(" ", 1)[1] if " " in query else query
+            urn = self.search_responses.get(table_name)
+            payload = {"searchResults": []} if urn is None else {"searchResults": [{"entity": {"urn": urn, "properties": {"name": table_name}}}]}
         else:
             payload = {}
         return _FakeToolResult(json.dumps(payload))
@@ -412,6 +423,9 @@ class TestRunDriftCheckOrchestration:
         assert finding.overall_status == "1 check(s) flagged"
 
 
+SCORES_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:sqlite,healthcare.main.denial_model_scores,PROD)"
+
+
 class TestRunDriftWritebackOrchestration:
     MODEL_URN = drift.MODEL_URN
 
@@ -421,7 +435,8 @@ class TestRunDriftWritebackOrchestration:
                 self.MODEL_URN: {"urn": self.MODEL_URN, "tags": {"tags": []}},
                 _assertion_urn_for_feature("segment_denial_rate"): {"urn": "x"},  # no "info" -> doesn't exist yet
                 _assertion_urn_for_feature("billing_zscore"): {"urn": "x"},
-            }
+            },
+            search_responses={drift.SCORES_TABLE_NAME: SCORES_DATASET_URN},
         )
         _patch_drift_mcp(monkeypatch, session)
         fake_emitter = _patch_drift_emitter(monkeypatch)
@@ -440,6 +455,15 @@ class TestRunDriftWritebackOrchestration:
         assert len(result.feature_assertions) == 2  # one per FEATURE, not per check
         assert all(ar.assertion_defined and ar.assertion_run_event_emitted for ar in result.feature_assertions)
 
+        # Assertions target the real dataset (denial_model_scores), not the
+        # MLModel -- live-verified this session (DataHub rejects a CUSTOM
+        # assertion whose entity isn't a dataset).
+        assertion_aspects = [item.aspect for item in fake_emitter.emitted if hasattr(item.aspect, "customAssertion")]
+        assert len(assertion_aspects) == 2
+        for aspect in assertion_aspects:
+            assert aspect.customAssertion.entity == SCORES_DATASET_URN
+            assert aspect.customAssertion.field.startswith(f"urn:li:schemaField:({SCORES_DATASET_URN},")
+
     def test_idempotent_rerun_produces_no_duplicate_writes(self, monkeypatch):
         """Same idempotency discipline as Scribe (decision 0007) — a
         second writeback for the SAME check_id must recognize the tag/doc/
@@ -450,7 +474,8 @@ class TestRunDriftWritebackOrchestration:
             {
                 self.MODEL_URN: {"urn": self.MODEL_URN, "tags": {"tags": [{"tag": {"urn": DRIFT_TAG_URN}}]}},
                 _assertion_urn_for_feature("segment_denial_rate"): {"urn": "x", "info": {}},  # already defined
-            }
+            },
+            search_responses={drift.SCORES_TABLE_NAME: SCORES_DATASET_URN},
         )
         _patch_drift_mcp(monkeypatch, session)
         _patch_drift_emitter(monkeypatch)
@@ -467,6 +492,25 @@ class TestRunDriftWritebackOrchestration:
         # not idempotent state) -- same discipline as Scribe's assertion
         # run events, decision 0007.
         assert result.feature_assertions[0].assertion_run_event_emitted is True
+
+    def test_scores_dataset_not_found_degrades_gracefully_tag_and_doc_still_applied(self, monkeypatch):
+        """denial_model_scores unresolvable (e.g. not yet ingested) must
+        not crash the whole writeback -- the tag/doc-note steps (which
+        don't need it) still complete, and the gap is reported rather than
+        silently dropped."""
+        session = _ScriptedMcpSession({self.MODEL_URN: {"urn": self.MODEL_URN, "tags": {"tags": []}}})  # no search_responses -> dataset unresolvable
+        _patch_drift_mcp(monkeypatch, session)
+        _patch_drift_emitter(monkeypatch)
+        _patch_drift_graph(monkeypatch)
+
+        finding = _make_finding([_make_check("segment_denial_rate", "range_invariant", "pass")])
+        result = run_drift_writeback(finding)
+
+        assert result.tag_applied is True
+        assert result.doc_note_added is True
+        assert result.skipped_reason is not None
+        assert result.feature_assertions[0].assertion_defined is False
+        assert result.feature_assertions[0].assertion_already_defined is False
 
     def test_entity_not_found_is_recorded_not_crashed_on(self, monkeypatch):
         """A genuinely nonexistent entity makes the real MCP server's

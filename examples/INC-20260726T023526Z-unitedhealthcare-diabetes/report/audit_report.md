@@ -2,7 +2,7 @@
 
 **Status**: investigated
 **Severity**: Critical
-**Generated**: 2026-07-27T04:23:31.117900+00:00
+**Generated**: 2026-07-28T00:11:56.900061+00:00
 
 ## What was detected
 
@@ -36,6 +36,16 @@ Denial counts for this segment, by reason code — read live from the database a
 | INVALID_BILLING_AMOUNT | 361 |
 | RANDOM_AUDIT | 8 |
 | HIGH_RISK_SCORE | 6 |
+
+## Model health check
+
+A feature-health check was run against the denial-risk scoring model (model version toy-denial-risk-v1). Overall result: all checks passed. This is a single-snapshot check of whether the model's input data still satisfies its own documented mathematical properties — not a comparison against historical data, since this project's dataset has no genuine earlier snapshot to compare against.
+
+| Feature | Check | Result | Summary |
+|---|---|---|---|
+| segment_denial_rate | a data-integrity range check | Passed | segment_denial_rate stayed within its mathematically valid 0-100% range for every scored claim (observed range: 2.3% to 20.8%). This is a data-integrity check, not a distributional comparison — it always passes when the underlying calculation is working correctly, and would only fail if that calculation itself were broken. |
+| billing_zscore | a check against the model's own documented boundary | Passed | 224 of 55500 scored claims (0.40%) have a billing_zscore beyond the model's own documented boundary of 4.0. Reported for visibility only — this version does not flag against any threshold here, to avoid treating an invented number as a meaningful cutoff. |
+| billing_zscore | a shape comparison against the theoretical expected distribution | Passed | billing_zscore's observed shape has a Population Stability Index of 0.0384 against the theoretical standard normal distribution it's mathematically supposed to approximate — within the healthy range under the standard PSI convention (under 0.10 means no significant shift). This compares shape against a mathematical reference, not against a past snapshot of this data — no such historical snapshot genuinely exists for this project's dataset. |
 
 ## Actions taken
 
@@ -75,6 +85,14 @@ This section is the raw technical trace Investigator used to reach its conclusio
 | 4f. Confirm raw_patients is the root (no further upstream) | mcp__datahub__get_lineage | get_lineage(urn=raw_patients, upstream=true, max_hops=2) | 0 upstream entities returned -- raw_patients is the root source table, so the 36-row defect is classified inherited_from:raw_patients rather than needing further tracing. |
 | 5. Quantify each explanation as a fraction of all 375 flagged denials | Bash (sqlite3, arithmetic) | 325/375, 36/375, 8/375, 6/375 | 86.67% sign-flip introduced at claims, 9.6% inherited pre-existing defect from raw_patients, 2.13% RANDOM_AUDIT (no hypothesis), 1.6% HIGH_RISK_SCORE (no hypothesis). Reported as four separate root_cause_breakdown entries rather than blended. |
 | 6. Check whether the sign-flip bug is segment-specific or systemic | Bash (sqlite3) | SELECT insurance_provider, medical_condition, COUNT(*) FROM claims JOIN mart_billing WHERE mb.billing_amount = -1*c.billing_amount AND mb.billing_amount>=0 GROUP BY 1,2 (whole-table, not segment-filtered) | All 325 sign-flip occurrences in the entire claims table belong to UnitedHealthcare/diabetes -- 0 elsewhere. The claims-build bug is fully localized to this exact segment, directly explaining why Sentinel's z-score flagged only this segment. |
+
+**Feature-health check** (drift-20260728T001150Z, 2026-07-28T00:11:50.734377+00:00): model_version toy-denial-risk-v1, written back to denial_risk_model in DataHub.
+
+| Feature | Check type | Documented expected | Metric value | Status |
+|---|---|---|---|---|
+| segment_denial_rate | range_invariant | [0.0, 1.0] | 0.0000 | pass |
+| billing_zscore | cap_exceedance | \|z\| <= 4.0 (BILLING_ZSCORE_CAP, score_claims.py) | 0.4036 | pass |
+| billing_zscore | shape_vs_theoretical | PSI < 0.1 vs. theoretical standard normal (published PSI convention) | 0.0384 | pass |
 
 ---
 

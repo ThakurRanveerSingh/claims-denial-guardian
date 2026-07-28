@@ -6,7 +6,8 @@
     "sentinel",
     "investigator",
     "remediator",
-    "scribe"
+    "scribe",
+    "drift"
   ],
   "sentinel": {
     "segment": {
@@ -220,5 +221,37 @@
     "branch_name": "guardian/fix-inc-20260724t234736z-cigna-obesity",
     "owner": "clinical_team",
     "reason": null
+  },
+  "drift": {
+    "check_id": "drift-20260728T001207Z",
+    "model_version": "toy-denial-risk-v1",
+    "checked_at": "2026-07-28T00:12:07.313702+00:00",
+    "feature_checks": [
+      {
+        "feature_name": "segment_denial_rate",
+        "check_type": "range_invariant",
+        "documented_expected": "[0.0, 1.0]",
+        "metric_value": 0.0,
+        "status": "pass",
+        "plain_summary": "segment_denial_rate stayed within its mathematically valid 0-100% range for every scored claim (observed range: 2.3% to 20.8%). This is a data-integrity check, not a distributional comparison \u2014 it always passes when the underlying calculation is working correctly, and would only fail if that calculation itself were broken."
+      },
+      {
+        "feature_name": "billing_zscore",
+        "check_type": "cap_exceedance",
+        "documented_expected": "|z| <= 4.0 (BILLING_ZSCORE_CAP, score_claims.py)",
+        "metric_value": 0.4036036036036036,
+        "status": "pass",
+        "plain_summary": "224 of 55500 scored claims (0.40%) have a billing_zscore beyond the model's own documented boundary of 4.0. Reported for visibility only \u2014 this version does not flag against any threshold here, to avoid treating an invented number as a meaningful cutoff."
+      },
+      {
+        "feature_name": "billing_zscore",
+        "check_type": "shape_vs_theoretical",
+        "documented_expected": "PSI < 0.1 vs. theoretical standard normal (published PSI convention)",
+        "metric_value": 0.03836076298101675,
+        "status": "pass",
+        "plain_summary": "billing_zscore's observed shape has a Population Stability Index of 0.0384 against the theoretical standard normal distribution it's mathematically supposed to approximate \u2014 within the healthy range under the standard PSI convention (under 0.10 means no significant shift). This compares shape against a mathematical reference, not against a past snapshot of this data \u2014 no such historical snapshot genuinely exists for this project's dataset."
+      }
+    ],
+    "overall_status": "pass"
   }
 }

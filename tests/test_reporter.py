@@ -372,7 +372,16 @@ class TestGoldenFileContentSanity:
 
 class TestModelHealthSection:
     def test_no_drift_finding_says_so_plainly(self, real_incident):
-        assert real_incident.drift is None  # both real incidents predate WP4
+        """Forces drift=None explicitly rather than relying on the real
+        incidents never having one attached -- that assumption held when
+        this test was first written, but broke the moment `guardian
+        check-drift --incident <id>` was actually run for real against
+        both canonical incidents (exactly the kind of stale-fixture-state
+        assumption this project's own "re-validate under the real current
+        state" discipline exists to catch). The absence-of-drift render
+        path is what's under test here, independent of which incidents
+        happen to have a check attached at any given moment."""
+        real_incident.drift = None
         md = generate_audit_report_md(real_incident, healthcare_db_path=REAL_DB_PATH)
         html_out = generate_audit_report_html(real_incident, healthcare_db_path=REAL_DB_PATH)
         assert "No feature-health check has been run" in md
