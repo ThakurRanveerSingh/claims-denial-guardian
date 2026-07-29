@@ -624,6 +624,55 @@ class TestRunGuardian:
         # scopes the run elsewhere.
         assert by_segment[Segment("Zorbex Insurance", "moonflu")].status == "no_anomaly"
 
+    def test_on_investigating_callback_fires_once_per_investigated_segment_before_the_call(self, monkeypatch):
+        """Sprint 4 WP1 fix: a real investigation can silently run 10+
+        minutes (DataHub MCP telemetry-retry backoff), which reads as a
+        hang without any progress feedback. `on_investigating` must fire
+        for each segment actually about to be investigated, and BEFORE
+        run_investigator() is called (not after, which would defeat the
+        point) — and must NOT fire for segments that aren't investigated at
+        all (no_anomaly, out of scope for `--segment`)."""
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
+
+        call_order = []
+        monkeypatch.setattr(
+            orchestrator,
+            "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: (
+                call_order.append(("investigate", finding.segment))
+                or InvestigatorRunResult(finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=500.0)
+            ),
+        )
+        notified_segments = []
+
+        def _on_investigating(segment):
+            call_order.append(("notify", segment))
+            notified_segments.append(segment)
+
+        run_guardian(conn=object(), generate_reports=False, on_investigating=_on_investigating)
+
+        assert notified_segments == [Segment("Zorbex Insurance", "moonflu")]  # the only flagged segment
+        assert call_order == [("notify", Segment("Zorbex Insurance", "moonflu")), ("investigate", Segment("Zorbex Insurance", "moonflu"))]
+
+    def test_on_investigating_defaults_to_none_and_stays_silent(self, monkeypatch):
+        """Every existing caller (every other test in this class) omits
+        on_investigating entirely — must not raise, must not require a
+        callback that does nothing."""
+        monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
+        monkeypatch.setattr(orchestrator, "get_backend", lambda name: object())
+        monkeypatch.setattr(orchestrator, "run_scribe", lambda incident: ScribeResult(incident_id=incident.incident_id))
+        monkeypatch.setattr(
+            orchestrator,
+            "run_investigator",
+            lambda backend, finding, conn, max_budget_usd=None: InvestigatorRunResult(
+                finding=_make_investigator_finding(), cost_usd=0.1, duration_ms=500.0
+            ),
+        )
+        incidents = run_guardian(conn=object(), generate_reports=False)  # no on_investigating
+        assert len(incidents) == 3
+
     def test_segment_not_found_raises_value_error(self, monkeypatch):
         monkeypatch.setattr(orchestrator, "run_sentinel", lambda conn, z_threshold=None: ALL_FAKE_SEGMENTS)
         with pytest.raises(ValueError, match="not found among"):

@@ -36,7 +36,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from dotenv import load_dotenv
 
@@ -438,6 +438,7 @@ def run_guardian(
     z_threshold: Optional[float] = None,
     max_budget_usd: Optional[float] = None,
     healthcare_db_path: Optional[Path] = None,
+    on_investigating: Optional[Callable[[Segment], None]] = None,
 ) -> list[Incident]:
     """Run the full pipeline (§4.1): Sentinel across every segment, then
     Investigator on whichever ones need it. Returns one Incident PER SEGMENT
@@ -514,6 +515,16 @@ def run_guardian(
     counts) — independent of `conn` above, which may be an in-memory or
     test-fixture connection Reporter has no file path for. Defaults to this
     module's own `DB_PATH` (the real, committed database) when not given.
+
+    `on_investigating`: optional callback invoked with the `Segment` right
+    before Investigator actually starts for it — this module stays print-
+    free otherwise (that's cli.py's job), but Investigator's own call can
+    silently run several minutes in practice (mostly DataHub MCP telemetry-
+    retry backoff, not this codebase's own work — Sprint 4 WP1's fresh-clone
+    judge simulation found a `guardian run` with zero terminal output for
+    10+ minutes reads as a hang, not "working"). A caller that wants that
+    reassurance (the CLI does) supplies a callback; a caller that doesn't
+    (every test) just omits it and gets the previous, silent behavior.
     """
     own_conn = conn is None
     if conn is None:
@@ -558,6 +569,9 @@ def run_guardian(
 
             if backend is None:
                 backend = get_backend(llm_backend_name)
+
+            if on_investigating is not None:
+                on_investigating(sf.segment)
 
             run_result = run_investigator(backend, sf, conn, max_budget_usd=max_budget_usd)
             incident = _build_incident(

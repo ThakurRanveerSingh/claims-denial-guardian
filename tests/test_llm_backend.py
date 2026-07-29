@@ -295,6 +295,32 @@ class TestClaudeCodeBackendInvestigate:
         _, kwargs = fake_run.calls[0]
         assert kwargs.get("timeout") == llm_backend.DEFAULT_INVESTIGATE_TIMEOUT_S
 
+    def test_env_defaults_to_none_when_not_supplied(self, backend, monkeypatch):
+        """`env=None` must reach subprocess.run unchanged -- that's the
+        stdlib's own "inherit this process's environment" signal. A caller
+        that doesn't care about env (every existing test above) must not
+        accidentally start passing a real dict here."""
+        fake_run = _fake_run_returning(SUCCESSFUL_CLAUDE_JSON)
+        monkeypatch.setattr(llm_backend.subprocess, "run", fake_run)
+        backend.investigate("task", "fake.json", ["tool_a"], max_budget_usd=1.0)
+        _, kwargs = fake_run.calls[0]
+        assert kwargs.get("env") is None
+
+    def test_env_is_forwarded_to_subprocess_run(self, backend, monkeypatch):
+        """The actual fix (Sprint 4 WP1): a caller (Investigator) can
+        guarantee the `claude` CLI subprocess has real, working env vars —
+        e.g. DATAHUB_GMS_URL/DATAHUB_GMS_TOKEN for investigator_mcp_config.
+        json's ${VAR} expansion — rather than leaving it to whatever this
+        process's own environment happens to contain. Generic here
+        deliberately: llm_backend.py has no idea these keys are
+        DataHub-specific, it just forwards whatever dict it's given."""
+        fake_run = _fake_run_returning(SUCCESSFUL_CLAUDE_JSON)
+        monkeypatch.setattr(llm_backend.subprocess, "run", fake_run)
+        custom_env = {"SOME_VAR": "some_value", "DATAHUB_GMS_URL": "http://localhost:8080"}
+        backend.investigate("task", "fake.json", ["tool_a"], max_budget_usd=1.0, env=custom_env)
+        _, kwargs = fake_run.calls[0]
+        assert kwargs.get("env") == custom_env
+
 
 # ===========================================================================
 # AnthropicBackend

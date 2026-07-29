@@ -227,11 +227,17 @@ class LLMBackend(ABC):
         allowed_tools: Any,
         max_budget_usd: float,
         timeout_s: float = DEFAULT_INVESTIGATE_TIMEOUT_S,
+        env: Optional[dict] = None,
     ) -> InvestigationResult:
         """Delegate an entire multi-turn investigation to the backend's own
         agent harness. Default body here (base class): NOT SUPPORTED — only
         ClaudeCodeBackend overrides this (decision 0004: it's the only
         backend that already IS an agent harness to delegate to).
+
+        `env`: forwarded to the subprocess this backend eventually shells
+        out to (`None` = inherit this process's own environment, unchanged
+        — see `_run_claude`'s docstring for why a caller would ever supply
+        one explicitly).
 
         Decision 0005: callers (Investigator, Slice 3) check
         `supports_delegated_investigation` BEFORE ever calling this, so in
@@ -256,7 +262,7 @@ class LLMBackend(ABC):
 # ---------------------------------------------------------------------------
 
 
-def _run_claude(cmd: list[str], timeout_s: float) -> str:
+def _run_claude(cmd: list[str], timeout_s: float, env: Optional[dict] = None) -> str:
     """Run a `claude` subprocess, returning raw stdout. Centralizes the two
     failure modes that need to raise OUR specific exception types instead of
     a raw stdlib one leaking out: a wall-clock timeout (LLD §5's blunt
@@ -266,9 +272,27 @@ def _run_claude(cmd: list[str], timeout_s: float) -> str:
     checked shutil.which() once, but re-raising the SAME specific exception
     type here closes that TOCTOU gap rather than leaking a bare
     FileNotFoundError past this module's exception contract).
+
+    `env`: passed straight through to `subprocess.run` (`None` keeps the
+    stdlib default of inheriting this process's own environment unchanged).
+    Exists so a caller whose `--mcp-config` JSON relies on `${VAR}`
+    expansion (e.g. Investigator's `investigator_mcp_config.json`) can
+    guarantee the `claude` CLI subprocess actually has those variables set
+    to real, working values — found necessary live, not speculatively: a
+    fresh-clone run with no `.env` at all left `DATAHUB_GMS_URL`/
+    `DATAHUB_GMS_TOKEN` simply absent from this process's environment, and
+    the resulting `${DATAHUB_GMS_URL}` expansion inside the child `claude`
+    process resolved to an empty string rather than any real default —
+    `mcp-server-datahub` then exposed zero tools, silently, with no error
+    surfaced anywhere (Investigator's own generated evidence eventually
+    reported "DataHub MCP server never exposed any tools despite 8 separate
+    ToolSearch attempts" and fell back to raw SQL introspection instead).
+    This module still has zero DataHub-specific knowledge — it just accepts
+    whatever `env` a caller supplies, same as it accepts any other subprocess
+    argument.
     """
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
     except subprocess.TimeoutExpired as e:
         raise BackendTimeoutError(f"claude -p did not complete within {timeout_s}s") from e
     except FileNotFoundError as e:
@@ -435,6 +459,7 @@ class ClaudeCodeBackend(LLMBackend):
         allowed_tools: Any,
         max_budget_usd: float,
         timeout_s: float = DEFAULT_INVESTIGATE_TIMEOUT_S,
+        env: Optional[dict] = None,
     ) -> InvestigationResult:
         """Design B's real mechanism (LLD §2.6): one `claude -p` subprocess
         call. Built GENERICALLY — this method has no idea it will eventually
@@ -442,7 +467,10 @@ class ClaudeCodeBackend(LLMBackend):
         names; that knowledge belongs to Investigator (Slice 3, not built
         yet), which supplies `mcp_config_path`/`allowed_tools` as plain
         arguments. This slice's own tests exercise this method with
-        fake/generic values for exactly that reason.
+        fake/generic values for exactly that reason. `env` is the same kind
+        of plain, opaque argument — this method has no idea it's DataHub's
+        `${DATAHUB_GMS_URL}`/`${DATAHUB_GMS_TOKEN}` a caller is guaranteeing
+        real values for, only that `subprocess.run` accepts an `env=`.
 
         `allowed_tools`: a list of tool-name strings (joined with commas
         here, matching §2.6's shown invocation shape) or an already-comma-
@@ -480,7 +508,7 @@ class ClaudeCodeBackend(LLMBackend):
             "--max-budget-usd",
             str(max_budget_usd),
         ]
-        stdout = _run_claude(cmd, timeout_s)
+        stdout = _run_claude(cmd, timeout_s, env=env)
         data = _parse_claude_json(stdout)
         _raise_for_errors(data)
 

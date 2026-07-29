@@ -24,14 +24,33 @@ healthcare/
 
 ## Authentication
 
-This DataHub instance runs with `METADATA_SERVICE_AUTH_ENABLED=true`, so every
-script here — and `datahub ingest` itself — needs a Personal Access Token.
-Anonymous requests get a 401.
+**Correction (Sprint 4 WP1, checked directly against the live instance
+rather than assumed from this note): reads and writes both succeed with NO
+token at all against this project's actual running GMS** — confirmed
+directly with a bare `curl` GraphQL read (no `Authorization` header) and a
+real SDK write (`DatahubRestEmitter(..., token=None)`, a scratch tag
+created then deleted to prove it), not just inferred. This is a real
+`datahub docker quickstart` deployment; its default policy configuration
+apparently grants broad access even without a presented token, regardless
+of `METADATA_SERVICE_AUTH_ENABLED`'s setting — the flag likely governs
+whether authentication is *required*, not what an unauthenticated request
+is *authorized* to do, and quickstart's default policies are permissive.
+**A token is still recommended, not required**: it identifies who/what made
+a change in DataHub's own audit trail (`actorId` on every aspect), and a
+differently-configured instance (a real production GMS, or a future
+tightened-down quickstart) may enforce this the way the note below
+originally assumed. Every script in this directory still supports
+`DATAHUB_GMS_TOKEN` and will use it if set — none of them require it to
+run against *this project's* instance, but assume you'll need one against
+someone else's.
 
-**1. Enable auth on the GMS** (already on for this project's instance; only
-needed if you're standing up a fresh one). Set
-`METADATA_SERVICE_AUTH_ENABLED=true` in the `datahub-gms` container's
-environment and restart it.
+**1. Enable auth on the GMS** (only relevant if you're standing up a fresh
+instance and want it enforced more strictly than quickstart's defaults).
+Set `METADATA_SERVICE_AUTH_ENABLED=true` in the `datahub-gms` container's
+environment and restart it — this alone was not sufficient to block
+anonymous reads/writes on this project's own instance (see the correction
+above), so treat it as one input to a real access-policy review, not a
+guarantee.
 
 **2. Generate a token.** In the DataHub UI: **Settings → Access Tokens →
 Generate new token**. Copy it immediately — it's only shown once.

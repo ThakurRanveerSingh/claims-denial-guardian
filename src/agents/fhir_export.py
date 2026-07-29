@@ -69,6 +69,14 @@ from datahub.metadata.schema_classes import (
 
 load_dotenv()
 
+# Sprint 4 WP1 finding: acryl-datahub's own telemetry (both the MCP
+# server's tool-call middleware AND this SDK's own emitter/graph client)
+# phones home to track.datahubproject.io on essentially every operation; on
+# a network that can't reach it, each one burns ~40s in connection-timeout
+# retries before doing any real work. `setdefault` so an operator who
+# explicitly wants telemetry back on (a real `.env` value) isn't overridden.
+os.environ.setdefault("DATAHUB_TELEMETRY_ENABLED", "false")
+
 DATAHUB_SERVER = os.environ.get("DATAHUB_GMS_URL", "http://localhost:8080")
 DATAHUB_TOKEN = os.environ.get("DATAHUB_GMS_TOKEN")
 
@@ -373,7 +381,16 @@ def _server_params() -> StdioServerParameters:
     return StdioServerParameters(
         command="uvx",
         args=["mcp-server-datahub@latest"],
-        env={**os.environ, "DATAHUB_GMS_URL": DATAHUB_SERVER, "DATAHUB_GMS_TOKEN": DATAHUB_TOKEN or ""},
+        # DATAHUB_TELEMETRY_ENABLED=false: Sprint 4 WP1 finding — every live
+        # MCP call otherwise burns ~40s in connection-timeout retries to
+        # track.datahubproject.io, DataHub's own documented opt-out (never
+        # this project's code reaching an unrelated host).
+        env={
+            **os.environ,
+            "DATAHUB_GMS_URL": DATAHUB_SERVER,
+            "DATAHUB_GMS_TOKEN": DATAHUB_TOKEN or "",
+            "DATAHUB_TELEMETRY_ENABLED": "false",
+        },
     )
 
 

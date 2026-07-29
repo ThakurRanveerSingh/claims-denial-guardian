@@ -210,6 +210,18 @@ class _FakeEmitter:
         self.emitted.append(mcpw)
 
 
+class TestServerParamsTelemetry:
+    """Sprint 4 WP1 finding: acryl-datahub's telemetry (track.datahubproject.io)
+    burns ~40s in connection-timeout retries per MCP call on a network that
+    can't reach it — confirmed the single biggest contributor to every live
+    command in this project looking hung. DATAHUB_TELEMETRY_ENABLED=false
+    is DataHub's own documented opt-out."""
+
+    def test_server_params_disables_datahub_telemetry(self):
+        params = drift._server_params()
+        assert params.env["DATAHUB_TELEMETRY_ENABLED"] == "false"
+
+
 class TestWriteHelpers:
     def test_apply_drift_tag_writes_union_when_not_present(self):
         emitter = _FakeEmitter()

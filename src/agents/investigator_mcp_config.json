@@ -4,7 +4,11 @@
       "type": "stdio",
       "command": "uvx",
       "args": ["mcp-server-datahub@latest"],
-      "env": { "DATAHUB_GMS_URL": "${DATAHUB_GMS_URL}", "DATAHUB_GMS_TOKEN": "${DATAHUB_GMS_TOKEN}" }
+      "env": {
+        "DATAHUB_GMS_URL": "${DATAHUB_GMS_URL}",
+        "DATAHUB_GMS_TOKEN": "${DATAHUB_GMS_TOKEN}",
+        "DATAHUB_TELEMETRY_ENABLED": "${DATAHUB_TELEMETRY_ENABLED}"
+      }
     }
   }
 }

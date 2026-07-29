@@ -134,7 +134,7 @@ class _ScriptedBackend:
         self._complete_index += 1
         return response
 
-    def investigate(self, task_prompt, mcp_config_path, allowed_tools, max_budget_usd, timeout_s=None):
+    def investigate(self, task_prompt, mcp_config_path, allowed_tools, max_budget_usd, timeout_s=None, env=None):
         self.investigate_calls.append(
             {
                 "task_prompt": task_prompt,
@@ -142,6 +142,7 @@ class _ScriptedBackend:
                 "allowed_tools": allowed_tools,
                 "max_budget_usd": max_budget_usd,
                 "timeout_s": timeout_s,
+                "env": env,
             }
         )
         if isinstance(self.investigate_result, Exception):
@@ -625,7 +626,63 @@ class TestExtractFencedJson:
             _extract_fenced_json("```json\n{not valid json,,,}\n```")
 
 
+class TestDatahubMcpEnv:
+    """Sprint 4 WP1's fix: a fresh-clone run with no `.env` left
+    DATAHUB_GMS_URL/DATAHUB_GMS_TOKEN entirely ABSENT from os.environ, which
+    made investigator_mcp_config.json's ${VAR} expansion resolve to an empty
+    string rather than any real default -- mcp-server-datahub then exposed
+    zero tools, silently (Investigator's own generated evidence reported "8
+    separate ToolSearch attempts" all failing). This is the regression test
+    for the real, working default now applied."""
+
+    def test_defaults_datahub_gms_url_when_unset(self, monkeypatch):
+        monkeypatch.delenv("DATAHUB_GMS_URL", raising=False)
+        env = investigator._datahub_mcp_env()
+        assert env["DATAHUB_GMS_URL"] == "http://localhost:8080"
+
+    def test_defaults_datahub_gms_token_to_empty_string_when_unset(self, monkeypatch):
+        monkeypatch.delenv("DATAHUB_GMS_TOKEN", raising=False)
+        env = investigator._datahub_mcp_env()
+        assert env["DATAHUB_GMS_TOKEN"] == ""
+
+    def test_preserves_real_values_when_set(self, monkeypatch):
+        monkeypatch.setenv("DATAHUB_GMS_URL", "http://real-datahub:9999")
+        monkeypatch.setenv("DATAHUB_GMS_TOKEN", "real-token-value")
+        env = investigator._datahub_mcp_env()
+        assert env["DATAHUB_GMS_URL"] == "http://real-datahub:9999"
+        assert env["DATAHUB_GMS_TOKEN"] == "real-token-value"
+
+    def test_carries_the_rest_of_os_environ_through(self, monkeypatch):
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "still-here")
+        env = investigator._datahub_mcp_env()
+        assert env["SOME_UNRELATED_VAR"] == "still-here"
+
+
 class TestDesignBInvestigate:
+    def test_design_b_passes_real_datahub_env_to_backend(self, monkeypatch):
+        """The actual fix, exercised end-to-end through run_investigator():
+        Design B must hand backend.investigate() a real, working
+        DATAHUB_GMS_URL default even when this process's own environment has
+        none configured -- not leave it to the `claude` CLI subprocess's own
+        ${VAR} expansion against a possibly-empty environment."""
+        monkeypatch.delenv("DATAHUB_GMS_URL", raising=False)
+        monkeypatch.delenv("DATAHUB_GMS_TOKEN", raising=False)
+        finding_dict = _valid_finding_dict()
+        backend = _ScriptedBackend(
+            name="claude_code",
+            supports_delegated_investigation=True,
+            investigate_result=InvestigationResult(
+                result_text="```json\n" + json.dumps(finding_dict) + "\n```", turns=1, raw={}
+            ),
+        )
+
+        run_investigator(backend, _make_sentinel_finding(), sqlite3.connect(":memory:"))
+
+        call = backend.investigate_calls[0]
+        assert call["env"] is not None
+        assert call["env"]["DATAHUB_GMS_URL"] == "http://localhost:8080"
+        assert call["env"]["DATAHUB_GMS_TOKEN"] == ""
+
     def test_successful_parse(self, monkeypatch):
         finding_dict = _valid_finding_dict(root_cause="inherited_from:raw_patients")
         result_text = "Investigation complete.\n\n```json\n" + json.dumps(finding_dict) + "\n```"

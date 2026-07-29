@@ -8,7 +8,8 @@
       ],
       "env": {
         "DATAHUB_GMS_URL": "${DATAHUB_GMS_URL}",
-        "DATAHUB_GMS_TOKEN": "${DATAHUB_GMS_TOKEN}"
+        "DATAHUB_GMS_TOKEN": "${DATAHUB_GMS_TOKEN}",
+        "DATAHUB_TELEMETRY_ENABLED": "false"
       }
     }
   }

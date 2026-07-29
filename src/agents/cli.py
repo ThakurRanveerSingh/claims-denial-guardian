@@ -133,6 +133,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_investigating(segment: Segment) -> None:
+    # Sprint 4 WP1 fix: a real `guardian run` investigation gives zero
+    # terminal output until the whole pipeline finishes — and can silently
+    # take 10+ minutes in practice (mostly DataHub MCP telemetry-retry
+    # backoff, confirmed live during the fresh-clone judge simulation, not
+    # this codebase's own work). Easily mistaken for a hang without this.
+    print(f"Sentinel flagged {segment.insurance_provider} / {segment.medical_condition} — investigating "
+          f"(this can take several minutes; most of it is DataHub round-trips, not local work)...")
+
+
 def _run_command(args: argparse.Namespace) -> int:
     try:
         incidents = run_guardian(
@@ -142,6 +152,7 @@ def _run_command(args: argparse.Namespace) -> int:
             writeback=not args.no_writeback,
             remediate=args.remediate,
             max_budget_usd=args.max_budget_usd,
+            on_investigating=_print_investigating,
         )
     except ValueError as e:
         # A real usage error (e.g. --segment naming something that doesn't

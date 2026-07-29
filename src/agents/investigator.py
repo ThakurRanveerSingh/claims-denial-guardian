@@ -78,6 +78,18 @@ from agents.sentinel import SentinelFinding
 # Same load_dotenv() convention as every other module in this repo.
 load_dotenv()
 
+# Sprint 4 WP1 finding: acryl-datahub's own telemetry (both the MCP
+# server's tool-call middleware AND this SDK's own emitter/graph client)
+# phones home to track.datahubproject.io on essentially every operation; on
+# a network that can't reach it, each one burns ~40s in connection-timeout
+# retries before doing any real work. `setdefault` so an operator who
+# explicitly wants telemetry back on (a real `.env` value) isn't overridden.
+# `_datahub_mcp_env()` below sets this explicitly too for the subprocess
+# case (Design B's `claude -p` child, whose own env this process's
+# `os.environ` doesn't automatically reach without being handed over) —
+# this call covers Design A's direct, in-process MCP/SDK usage.
+os.environ.setdefault("DATAHUB_TELEMETRY_ENABLED", "false")
+
 _MODULE_DIR = Path(__file__).resolve().parent
 
 # The real, committed database (decision 0002) — resolved to an ABSOLUTE
@@ -97,6 +109,48 @@ DB_PATH = (_MODULE_DIR.parent / "datahub" / "healthcare.db").resolve()
 # implementation checklist, lld-sprint2.md §10.9) — same shape as the
 # repo-root .mcp.json, ${VAR}-expansion, no literal secrets.
 MCP_CONFIG_PATH = _MODULE_DIR / "investigator_mcp_config.json"
+
+
+def _datahub_mcp_env() -> dict:
+    """Real, working defaults for DATAHUB_GMS_URL/DATAHUB_GMS_TOKEN — the
+    exact same `os.environ.get(key, default)` convention scribe.py/drift.py/
+    fhir_export.py's own `_server_params()`/module-level constants already
+    use, applied here so Design A and Design B stop each computing their own
+    (previously inconsistent) version of this.
+
+    Found live, not assumed (Sprint 4 WP1's fresh-clone judge simulation):
+    with no `.env` at all, `DATAHUB_GMS_URL`/`DATAHUB_GMS_TOKEN` are simply
+    ABSENT from `os.environ`, not present-but-empty. Design B's `${VAR}`
+    expansion inside investigator_mcp_config.json resolves an absent
+    variable to an empty string when the `claude` CLI subprocess spawns
+    mcp-server-datahub — and an EMPTY `DATAHUB_GMS_URL` is a real, present
+    value, so mcp-server-datahub's own `os.environ.get("DATAHUB_GMS_URL",
+    "http://localhost:8080")`-style fallback never kicks in (that fallback
+    only fires for a MISSING key, not one explicitly set to ""). The
+    observed result was silent, total tool unavailability — Investigator's
+    own generated evidence reported "DataHub MCP server never exposed any
+    tools despite 8 separate ToolSearch attempts" and fell back to raw SQL
+    introspection instead. Design A's own inline env dict had the identical
+    class of bug (defaulted to `""`, not `"http://localhost:8080"`) — same
+    root cause, different code path, fixed here once for both.
+    """
+    return {
+        **os.environ,
+        "DATAHUB_GMS_URL": os.environ.get("DATAHUB_GMS_URL", "http://localhost:8080"),
+        "DATAHUB_GMS_TOKEN": os.environ.get("DATAHUB_GMS_TOKEN") or "",
+        # Sprint 4 WP1: mcp-server-datahub phones home to
+        # track.datahubproject.io on every tool call via acryl-datahub's own
+        # telemetry module; on a network that can't reach it (true of every
+        # live run this whole project has made so far), each call burns
+        # ~40s in connection-timeout retries before doing any real work —
+        # confirmed live, the single biggest contributor to "guardian run
+        # looks hung" (finding #5, fresh-clone judge simulation). This is
+        # DataHub's own documented opt-out
+        # (datahub.telemetry.telemetry.ENV_ENABLED / get_boolean_env_variable
+        # — any value other than "true"/"1" disables it), not something this
+        # project invented.
+        "DATAHUB_TELEMETRY_ENABLED": "false",
+    }
 
 # The DataHub MCP server's confirmed read-only tool surface (lld-sprint2.md
 # §0/§2.5) — re-confirmed live this slice (§10.9's gate) with one real
@@ -563,6 +617,7 @@ def _investigate_design_b(
             allowed_tools=DESIGN_B_ALLOWED_TOOLS,
             max_budget_usd=max_budget_usd,
             timeout_s=timeout_s,
+            env=_datahub_mcp_env(),
         )
     except BudgetExhaustedError as e:
         # §6 failure mode 3's specific, distinguishable reason string — the
@@ -897,11 +952,7 @@ async def _investigate_design_a_async(
     server_params = StdioServerParameters(
         command="uvx",
         args=["mcp-server-datahub@latest"],
-        env={
-            **os.environ,
-            "DATAHUB_GMS_URL": os.environ.get("DATAHUB_GMS_URL", ""),
-            "DATAHUB_GMS_TOKEN": os.environ.get("DATAHUB_GMS_TOKEN", ""),
-        },
+        env=_datahub_mcp_env(),
     )
 
     messages: list[dict] = [{"role": "user", "content": _design_a_system_prompt(finding)}]
