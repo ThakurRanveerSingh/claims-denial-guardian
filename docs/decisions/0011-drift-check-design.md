@@ -204,3 +204,16 @@ appendix, for both real incidents with a fabricated finding attached.
   applied throughout, this time catching a real DataHub schema
   constraint neither the LLD nor the mocked test suite could have
   surfaced on their own.
+
+## Upstream issue filed (Sprint 4 WP2)
+
+The 422 this decision's §5 documents was filed upstream against DataHub
+itself: [datahub-project/datahub#18743](https://github.com/datahub-project/datahub/issues/18743)
+— not disputing that assertions may be intentionally dataset-scoped only,
+just that `CustomAssertionInfo`'s error messages ("Required: [dataset]"
+for a non-Dataset `.entity`; "Failed to retrieve entity with urn
+segment_denial_rate, invalid urn" for a bare-string `.field`) don't name
+the actual constraint, costing real debugging time to trace back to "must
+be a Dataset URN" / "must be a schemaField URN" respectively. Confirmed
+against a live `datahub docker quickstart` instance (server v1.5.0.6,
+`acryl-datahub` SDK 1.6.0.15).

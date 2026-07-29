@@ -202,3 +202,16 @@ mocking. Recorded here, and in `scribe.py`'s own module docstring and the
 two functions involved, per the repo owner's standing instruction: this is
 exactly the kind of hard-won platform detail worth pinning down for the
 next person (or the next sprint) rather than letting it be re-discovered.
+
+## Upstream issue filed (Sprint 4 WP2)
+
+The "MLModel-lineage lesson" this decision references (§3, and originally
+found in Sprint 1 — see `sprint-1-day1.md`, `register_ml_model.py`'s
+`build_output_reference_mcps`) was filed upstream against DataHub itself:
+[datahub-project/datahub#18742](https://github.com/datahub-project/datahub/issues/18742)
+— no supported mechanism found to represent an `MLModel` as a
+graph-traversable lineage upstream of a `Dataset`, evidenced by three
+independently-rejected approaches (`UpstreamLineageClass`, the
+`updateLineage` GraphQL mutation, and a `DataJob` detour), all confirmed
+against a live `datahub docker quickstart` instance (server v1.5.0.6,
+`acryl-datahub` SDK 1.6.0.15).

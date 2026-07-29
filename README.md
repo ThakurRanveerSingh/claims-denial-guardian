@@ -1,11 +1,58 @@
 # Claims Denial Guardian
 
+## The pitch
+
 An agent pipeline that watches a healthcare claims pipeline, statistically
-flags abnormal denial patterns, traces them to a root cause using **real
-data lineage** (not a guess), generates a fix, writes what it learned back
-into the metadata graph, and produces a compliance-facing audit report —
-end to end, against real (synthetic) data, with every claim checked
-against a live system rather than assumed.
+flags abnormal denial patterns, traces each one to a root cause through
+**real DataHub lineage** (not a guess), generates a fix, writes what it
+learned back into the metadata graph, and produces a compliance-facing
+audit report — end to end, against real (synthetic) data, every claim
+checked against a live system rather than assumed. Two seeded incidents
+prove Investigator actually discriminates, not just pattern-matches: one
+defect is injected *downstream*, directly into `claims`
+(`UnitedHealthcare`/`diabetes` → traced to `introduced_at:claims`), the
+other *upstream*, into the original source data
+(`Cigna`/`obesity` → traced all the way to `inherited_from:raw_patients`)
+— same detector, same investigator, two structurally different answers,
+both verified correct against the real lineage graph.
+
+Hits all four tracks: **Agents That Do Real Work** (Sentinel/Investigator/
+Scribe actually detect, trace, and write back against a live DataHub
+instance — nothing here is scripted or mocked for the demo); **Metadata-
+Aware Code Generation & Development** (Remediator reads the real, live
+DataHub schema before generating fix SQL, then opens a real PR —
+[#1](https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/1)/[#2](https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/2)
+— against it); **Production ML Agents** (a real `MLModel`/`MLFeature`/
+`MLFeatureTable` entity registered in DataHub, checked on demand by
+`guardian check-drift` against its own documented feature-health
+invariants); and **Open/Wildcard** (the FHIR compliance bridge —
+`guardian export-fhir` generates real FHIR R4 resources traceable back to
+the specific incident and DataHub lineage that flagged the data they're
+built on, a CMS-0057-F compliance-linkage angle nothing else here covers).
+
+## Quick links
+
+- [`examples/`](examples/) — real, already-generated output for both
+  canonical incidents: `incident.json`, audit reports, FHIR resources.
+- Sample report: [`examples/INC-20260724T234736Z-cigna-obesity/report/audit_report.html`](examples/INC-20260724T234736Z-cigna-obesity/report/audit_report.html)
+  (GitHub shows source here — it's a real, self-contained HTML file;
+  download/open it locally to see it rendered).
+- Real, open pull requests Remediator filed:
+  [PR #1](https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/1) ·
+  [PR #2](https://github.com/ThakurRanveerSingh/denial-guardian-data-platform/pull/2)
+- Worth reading first: [`docs/decisions/0008`](docs/decisions/0008-remediator-design.md)
+  (why Remediator quarantines suspect rows instead of "fixing" values it
+  can't actually verify) and [`docs/decisions/0012`](docs/decisions/0012-fhir-compliance-bridge.md)
+  (exactly what the FHIR export is and isn't — written for a reader who
+  knows FHIR).
+
+**Current state, honestly**: 414 tests (408 pass by default; 6 marked
+`@pytest.mark.live`, excluded unless you point them at a real DataHub —
+see Testing below). Every live-path number in this README was measured,
+not assumed: a zero-config `guardian run` takes **158.5s**, `guardian
+check-drift` **3.4s**, `guardian export-fhir` **1.8s** — all down from
+multi-minute runs before DataHub's own telemetry was found and disabled
+(full before/after: [`docs/walkthroughs/sprint-4-wp1.md`](docs/walkthroughs/sprint-4-wp1.md)).
 
 **Sentinel** (detect) → **Investigator** (trace root cause via DataHub
 lineage) → **Remediator** (generate + open a real PR) → **Scribe** (write
@@ -25,9 +72,10 @@ why, and what was rejected.
 
 - **Python 3.11+**
 - **Docker** (to run DataHub locally — see below)
-- **One LLM backend**, either:
-  - the [`claude` CLI](https://docs.claude.com/claude-code) on `PATH`, already logged in (the default — **no `ANTHROPIC_API_KEY` needed**, it uses your existing Claude subscription/login), *or*
-  - an `ANTHROPIC_API_KEY` (set `LLM_BACKEND=anthropic` in `.env`)
+- **One LLM backend** — pluggable via `.env`'s `LLM_BACKEND`, three named options:
+  - `claude_code` (**the default**) — the [`claude` CLI](https://docs.claude.com/claude-code) on `PATH`, already logged in. **No `ANTHROPIC_API_KEY` needed**, it uses your existing Claude subscription/login.
+  - `anthropic` — a real, working `ANTHROPIC_API_KEY` in `.env`.
+  - `ollama` — interface-only stub today (no local-model integration built yet); listed here for honesty about the pluggable-backend shape, not because it currently runs anything.
 - `gh` CLI, authenticated, only if you want to reproduce Remediator's pull
   requests (`--remediate`) — optional, the demo PRs already exist on
   [`denial-guardian-data-platform`](https://github.com/ThakurRanveerSingh/denial-guardian-data-platform).
