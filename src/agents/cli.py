@@ -139,8 +139,19 @@ def _print_investigating(segment: Segment) -> None:
     # take 10+ minutes in practice (mostly DataHub MCP telemetry-retry
     # backoff, confirmed live during the fresh-clone judge simulation, not
     # this codebase's own work). Easily mistaken for a hang without this.
-    print(f"Sentinel flagged {segment.insurance_provider} / {segment.medical_condition} — investigating "
-          f"(this can take several minutes; most of it is DataHub round-trips, not local work)...")
+    #
+    # flush=True is not cosmetic: caught live during Part D's own re-test
+    # of this exact fix — Python stdout is block-buffered, not
+    # line-buffered, whenever it isn't a real terminal (redirected to a
+    # file/pipe, or captured the way this project's own background-task
+    # tooling does), so an un-flushed print() here would sit invisible in
+    # the buffer for the ENTIRE multi-minute investigation and never
+    # actually solve the "looks hung" problem this fix exists for.
+    print(
+        f"Sentinel flagged {segment.insurance_provider} / {segment.medical_condition} — investigating "
+        f"(this can take several minutes; most of it is DataHub round-trips, not local work)...",
+        flush=True,
+    )
 
 
 def _run_command(args: argparse.Namespace) -> int:
